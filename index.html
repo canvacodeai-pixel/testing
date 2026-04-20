@@ -2117,286 +2117,946 @@ window.cetakRekapSaldoSiswa = function() {
             window.startCarousel(); setTimeout(window.updateChart, 100); 
         }
 
-// --- BAGIAN FITUR LJK ---
-let ljkTab = 'buat'; // Default tab
+// =========================================================================
+// BAGIAN FITUR LJK — Engine adopsi dari ScanJawab (app.js referensi)
+// =========================================================================
 
-window.renderGuruLJK = function() {
-    window.setPageTitle("Scanner LJK & OMR");
-    
-    let btnBuat = ljkTab === 'buat' ? 'bg-rose-600 text-white' : 'bg-white text-rose-600 border border-rose-600';
-    let btnRiwayat = ljkTab === 'riwayat' ? 'bg-rose-600 text-white' : 'bg-white text-rose-600 border border-rose-600';
-    let btnAnalisis = ljkTab === 'analisis' ? 'bg-rose-600 text-white' : 'bg-white text-rose-600 border border-rose-600';
+// ---------- Konstanta LJK ----------
+const LJK_SHEET_W  = 1240;
+const LJK_SHEET_H  = 1754;
+const LJK_MARKER   = 66;
+const LJK_LETTERS  = ['A','B','C','D','E'];
+const LJK_STORE    = 'mc_ljk_scan';
 
-    let html = `
-        <div class="fade-in max-w-6xl mx-auto pb-20">
-            <div class="flex space-x-2 mb-6 overflow-x-auto pb-2 no-print">
-                <button onclick="ljkTab='buat'; window.renderGuruLJK()" class="flex-1 min-w-[150px] font-bold py-2 rounded-lg shadow-sm transition ${btnBuat}">Buat LJK</button>
-                <button onclick="ljkTab='riwayat'; window.renderGuruLJK()" class="flex-1 min-w-[150px] font-bold py-2 rounded-lg shadow-sm transition ${btnRiwayat}">Riwayat Scan</button>
-                <button onclick="ljkTab='analisis'; window.renderGuruLJK()" class="flex-1 min-w-[150px] font-bold py-2 rounded-lg shadow-sm transition ${btnAnalisis}">Analisis Butir</button>
-            </div>
-    `;
+// ---------- State lokal LJK ----------
+let ljkTab = 'buat';
+window.stateRiwayatScan = 'list';
+window.activeScanId = null;
 
-    // Logika pemilihan konten tab
-    if (ljkTab === 'buat') html += renderTabBuatLJK();
-    else if (ljkTab === 'riwayat') html += renderTabRiwayatLJK();
-    else html += renderTabAnalisisLJK();
-
-    html += `</div>`;
-    document.getElementById('main-content').innerHTML = html;
+// State untuk engine scan (mirip app.js)
+const ljkScanState = {
+    examTitle: 'Ujian Harian',
+    questionCount: 20,
+    choiceCount: 4,
+    maxScore: 100,
+    answerKey: [],
+    previewImage: null,
+    previewRotation: 0,
+    lastResults: [],
+    cameraStream: null,
+    detectionThreshold: 0.55,
 };
 
-function renderTabBuatLJK() {
-    const pgOptions = [10, 15, 20, 25, 30, 35, 40, 45, 50].map(n => `<option value="${n}" ${n==20?'selected':''}>${n} Soal</option>`).join('');
+// =========================================================================
+// RENDER UTAMA
+// =========================================================================
+window.renderGuruLJK = function() {
+    window.setPageTitle('Scanner LJK & OMR');
+    const tabs = [
+        { id: 'buat',     label: '<i class="fas fa-file-alt mr-1"></i> Buat LJK' },
+        { id: 'scan',     label: '<i class="fas fa-camera mr-1"></i> Scan' },
+        { id: 'riwayat',  label: '<i class="fas fa-history mr-1"></i> Riwayat' },
+        { id: 'analisis', label: '<i class="fas fa-chart-bar mr-1"></i> Analisis' },
+    ];
+    const tabHtml = tabs.map(t => {
+        const active = ljkTab === t.id ? 'bg-rose-600 text-white shadow' : 'bg-white text-rose-700 border border-rose-300 hover:bg-rose-50';
+        return `<button onclick="ljkTab='${t.id}'; window.renderGuruLJK()" class="flex-1 min-w-[110px] font-bold py-2 rounded-lg transition text-sm ${active}">${t.label}</button>`;
+    }).join('');
 
+    let content = '';
+    if (ljkTab === 'buat')     content = renderTabBuatLJK();
+    else if (ljkTab === 'scan')     content = renderTabScanLJK();
+    else if (ljkTab === 'riwayat')  content = renderTabRiwayatLJK();
+    else                             content = renderTabAnalisisLJK();
+
+    document.getElementById('main-content').innerHTML = `
+        <div class="fade-in max-w-6xl mx-auto pb-20">
+            <div class="flex space-x-2 mb-5 overflow-x-auto pb-1 no-print">${tabHtml}</div>
+            ${content}
+        </div>`;
+
+    // Init canvas setelah render
+    if (ljkTab === 'buat') { setTimeout(ljkInitBuatCanvas, 100); }
+    if (ljkTab === 'scan') { setTimeout(ljkInitScanUI, 100); }
+};
+
+// =========================================================================
+// TAB 1: BUAT LJK  (canvas-based seperti referensi)
+// =========================================================================
+function renderTabBuatLJK() {
+    const pgOptions = [10,15,20,25,30,35,40,45,50].map(n =>
+        `<option value="${n}" ${n==20?'selected':''}>${n} Soal</option>`).join('');
     return `
-        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 mb-6 no-print">
-            <div class="flex items-center mb-4 border-b pb-2">
-                <i class="fas fa-print text-rose-600 text-2xl mr-3"></i>
-                <h3 class="font-bold text-gray-800 text-lg">Pengaturan Cetak LJK</h3>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <!-- Konfigurasi -->
+        <div class="bg-white rounded-2xl shadow-sm border p-5 space-y-4">
+            <h3 class="font-bold text-gray-800 text-base border-b pb-2"><i class="fas fa-cog text-rose-500 mr-2"></i>Konfigurasi Lembar Jawaban</h3>
+            <div class="grid grid-cols-2 gap-3">
                 <div>
-                    <label class="text-sm font-bold text-gray-600 block mb-1">I. Pilihan Ganda</label>
-                    <select id="ljkJumlahSoal" class="border-2 border-gray-200 p-2.5 rounded-lg w-full font-bold outline-none focus:border-rose-400">
-                        ${pgOptions}
-                    </select>
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Nama Ujian</label>
+                    <input id="ljkExamTitle" type="text" value="Ujian Harian" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-semibold outline-none focus:border-rose-400">
                 </div>
                 <div>
-                    <label class="text-sm font-bold text-gray-600 block mb-1">Opsi Jawaban (PG)</label>
-                    <select id="ljkOpsi" class="border-2 border-gray-200 p-2.5 rounded-lg w-full font-bold outline-none focus:border-rose-400">
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Nilai Maksimum</label>
+                    <input id="ljkMaxScore" type="number" value="100" min="1" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-bold outline-none focus:border-rose-400">
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Jumlah Soal PG</label>
+                    <select id="ljkJumlahSoal" class="border-2 border-gray-200 p-2 rounded-lg w-full font-bold text-sm outline-none focus:border-rose-400">${pgOptions}</select>
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Pilihan Jawaban</label>
+                    <select id="ljkOpsi" class="border-2 border-gray-200 p-2 rounded-lg w-full font-bold text-sm outline-none focus:border-rose-400">
                         <option value="4">A, B, C, D</option>
                         <option value="5" selected>A, B, C, D, E</option>
                     </select>
                 </div>
+                <div class="col-span-2">
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Uraian / Essay (0 = tidak ada)</label>
+                    <input id="ljkEssay" type="number" value="0" min="0" max="20" class="border-2 border-gray-200 p-2 rounded-lg w-full font-bold text-sm outline-none focus:border-rose-400">
+                </div>
+            </div>
+
+            <!-- Kunci Jawaban -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <h4 class="font-bold text-gray-700 text-sm">Kunci Jawaban (opsional)</h4>
+                    <div class="flex gap-2">
+                        <button onclick="ljkFillAltKey()" class="text-xs px-3 py-1 rounded-full border border-rose-300 text-rose-700 hover:bg-rose-50">Pola A-B-C</button>
+                        <button onclick="ljkClearKey()" class="text-xs px-3 py-1 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50">Kosongkan</button>
+                    </div>
+                </div>
+                <div id="ljkAnswerKeyGrid" class="max-h-48 overflow-y-auto space-y-1 border rounded-xl p-2 bg-gray-50"></div>
+            </div>
+
+            <div class="flex gap-3 pt-1">
+                <button onclick="ljkGenerate()" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 rounded-xl shadow transition text-sm">
+                    <i class="fas fa-magic mr-2"></i>Generate Lembar
+                </button>
+                <button onclick="ljkPrintSheet()" class="flex-1 bg-gray-800 hover:bg-black text-white font-bold py-2.5 rounded-xl shadow transition text-sm">
+                    <i class="fas fa-print mr-2"></i>Print / PDF
+                </button>
+            </div>
+        </div>
+
+        <!-- Preview Canvas -->
+        <div class="bg-white rounded-2xl shadow-sm border p-4">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-eye text-gray-400 mr-2"></i>Pratinjau Lembar Jawaban</h3>
+            </div>
+            <div class="overflow-auto max-h-[70vh] bg-gray-100 rounded-xl p-2">
+                <canvas id="ljkSheetCanvas" width="${LJK_SHEET_W}" height="${LJK_SHEET_H}" style="width:100%; display:block; border-radius:8px; background:#fff;"></canvas>
+            </div>
+        </div>
+    </div>`;
+}
+
+// --------- init canvas Buat LJK ---------
+function ljkInitBuatCanvas() {
+    ljkSyncConfig();
+    ljkBuildKeyUI();
+    ljkDrawSheet();
+
+    // bind events konfigurasi
+    ['ljkExamTitle','ljkJumlahSoal','ljkOpsi','ljkMaxScore','ljkEssay'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', () => { ljkSyncConfig(); ljkBuildKeyUI(); ljkDrawSheet(); });
+    });
+}
+
+function ljkSyncConfig() {
+    ljkScanState.examTitle     = (document.getElementById('ljkExamTitle')||{}).value || 'Ujian';
+    ljkScanState.questionCount = Math.min(60, Math.max(1, parseInt((document.getElementById('ljkJumlahSoal')||{}).value) || 20));
+    ljkScanState.choiceCount   = parseInt((document.getElementById('ljkOpsi')||{}).value) || 4;
+    ljkScanState.maxScore      = Math.max(1, parseInt((document.getElementById('ljkMaxScore')||{}).value) || 100);
+    // resize answerKey
+    while (ljkScanState.answerKey.length < ljkScanState.questionCount) ljkScanState.answerKey.push(null);
+    ljkScanState.answerKey = ljkScanState.answerKey.slice(0, ljkScanState.questionCount);
+}
+
+function ljkBuildKeyUI() {
+    const grid = document.getElementById('ljkAnswerKeyGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let i = 0; i < ljkScanState.questionCount; i++) {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-1';
+        row.innerHTML = `<span class="text-xs font-mono text-gray-400 w-6 text-right">${i+1}.</span>`;
+        LJK_LETTERS.slice(0, ljkScanState.choiceCount).forEach(ch => {
+            const active = ljkScanState.answerKey[i] === ch;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `w-8 h-7 rounded text-xs font-bold border transition ${active ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-gray-600 border-gray-300 hover:bg-rose-50'}`;
+            btn.textContent = ch;
+            btn.onclick = () => {
+                ljkScanState.answerKey[i] = ljkScanState.answerKey[i] === ch ? null : ch;
+                ljkBuildKeyUI();
+                ljkDrawSheet();
+            };
+            row.appendChild(btn);
+        });
+        grid.appendChild(row);
+    }
+}
+
+function ljkFillAltKey() {
+    ljkSyncConfig();
+    ljkScanState.answerKey = ljkScanState.answerKey.map((_, i) => LJK_LETTERS[i % Math.min(3, ljkScanState.choiceCount)]);
+    ljkBuildKeyUI(); ljkDrawSheet();
+}
+function ljkClearKey() {
+    ljkScanState.answerKey = ljkScanState.answerKey.map(() => null);
+    ljkBuildKeyUI(); ljkDrawSheet();
+}
+window.ljkGenerate = function() { ljkSyncConfig(); ljkBuildKeyUI(); ljkDrawSheet(); };
+window.ljkPrintSheet = function() {
+    const canvas = document.getElementById('ljkSheetCanvas');
+    if (!canvas) return;
+    const win = window.open('');
+    win.document.write(`<html><body style="margin:0"><img src="${canvas.toDataURL()}" style="width:100%"></body></html>`);
+    win.document.close();
+    win.print();
+};
+
+// --------- Gambar Sheet (canvas, dari app.js) ---------
+function ljkGetLayout() {
+    const q = ljkScanState.questionCount;
+    const cols = q > 30 ? 3 : 2;
+    return {
+        columns: cols,
+        top: 560, left: 170, bottom: 1420,
+        colGap: cols === 3 ? 340 : 470,
+        rowGap: q > 30 ? 42 : 54,
+        choiceGap: ljkScanState.choiceCount === 5 ? 46 : 56,
+        radius: q > 30 ? 17 : 20,
+    };
+}
+
+function ljkGetBubblePos(idx, layout) {
+    const perCol = Math.ceil(ljkScanState.questionCount / layout.columns);
+    const col = Math.floor(idx / perCol);
+    const row = idx % perCol;
+    return { col, row, colX: layout.left + col * layout.colGap, y: layout.top + row * layout.rowGap };
+}
+
+function ljkDrawSheet() {
+    const canvas = document.getElementById('ljkSheetCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    const grad = ctx.createLinearGradient(0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    grad.addColorStop(0, '#fdf6ee'); grad.addColorStop(1, '#fff');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, LJK_SHEET_W, 220);
+
+    // Markers
+    [[60,60],[LJK_SHEET_W-60-LJK_MARKER,60],[60,LJK_SHEET_H-60-LJK_MARKER],[LJK_SHEET_W-60-LJK_MARKER,LJK_SHEET_H-60-LJK_MARKER]].forEach(([x,y]) => {
+        ctx.fillStyle = '#111'; ctx.fillRect(x, y, LJK_MARKER, LJK_MARKER);
+        ctx.clearRect(x+14, y+14, LJK_MARKER-28, LJK_MARKER-28);
+        ctx.fillStyle = '#111'; ctx.fillRect(x+22, y+22, LJK_MARKER-44, LJK_MARKER-44);
+    });
+
+    // Header
+    ctx.fillStyle = '#17231f';
+    ctx.font = "700 52px Arial"; ctx.fillText('LEMBAR JAWABAN', 140, 120);
+    ctx.font = "500 26px Arial"; ctx.fillStyle = '#8f4519';
+    ctx.fillText(ljkScanState.examTitle, 140, 158);
+    ctx.font = "400 20px monospace"; ctx.fillStyle = '#60706a';
+    ctx.fillText('Arsir satu bubble dengan pensil/pena gelap. Foto dari atas agar 4 marker terlihat.', 140, 198);
+
+    // Field Nama & No Peserta
+    ctx.fillStyle = '#17231f'; ctx.font = '500 20px Arial';
+    ctx.fillText('Nama siswa', 140, 240);
+    ctx.strokeStyle = 'rgba(23,35,31,0.35)'; ctx.lineWidth = 2;
+    ctx.strokeRect(140, 248, 620, 64);
+    ctx.fillText('Nomor peserta', 790, 240);
+    ctx.strokeRect(790, 248, 340, 64);
+
+    // Petunjuk
+    ctx.fillStyle = '#17231f'; ctx.font = '700 20px Arial'; ctx.fillText('Petunjuk:', 140, 368);
+    ctx.font = '400 18px Arial'; ctx.fillStyle = '#444';
+    ctx.fillText('1. Gunakan pensil/pena gelap untuk mengarsir satu jawaban per soal.', 140, 396);
+    ctx.fillText('2. Pastikan keempat marker hitam di sudut tidak tertutup saat difoto.', 140, 422);
+    ctx.fillText('3. Foto dari atas agar hasil scan lebih akurat.', 140, 448);
+
+    // Grid Soal
+    const layout = ljkGetLayout();
+    ctx.font = `600 18px monospace`; ctx.fillStyle = '#17231f';
+    for (let i = 0; i < ljkScanState.questionCount; i++) {
+        const b = ljkGetBubblePos(i, layout);
+        ctx.textAlign = 'right'; ctx.fillText(String(i+1).padStart(2,'0'), b.colX - 14, b.y + 7);
+        ctx.textAlign = 'left';
+        for (let j = 0; j < ljkScanState.choiceCount; j++) {
+            const cx = b.colX + j * layout.choiceGap;
+            const isKey = ljkScanState.answerKey[i] === LJK_LETTERS[j];
+            ctx.beginPath(); ctx.arc(cx, b.y, layout.radius, 0, Math.PI*2);
+            ctx.strokeStyle = isKey ? '#c46a2f' : 'rgba(23,35,31,0.55)';
+            ctx.lineWidth = isKey ? 4 : 2; ctx.stroke();
+            if (isKey) { ctx.fillStyle = 'rgba(196,106,47,0.14)'; ctx.fill(); }
+            ctx.fillStyle = '#17231f'; ctx.font = `600 17px monospace`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(LJK_LETTERS[j], cx, b.y);
+            ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+        }
+    }
+    ctx.fillStyle = '#888'; ctx.font = '400 16px monospace'; ctx.textAlign = 'left';
+    ctx.fillText(`Jumlah soal: ${ljkScanState.questionCount}  |  Pilihan: ${LJK_LETTERS.slice(0,ljkScanState.choiceCount).join('-')}`, 140, LJK_SHEET_H - 110);
+}
+
+// =========================================================================
+// TAB 2: SCAN LJK  (kamera + upload + analisis — dari app.js)
+// =========================================================================
+function renderTabScanLJK() {
+    const scans = getDB(LJK_STORE).filter(s => s.guruUsername === currentUserUsername);
+    const scanOptions = scans.map(s => `<option value="${s.id}">${s.topik} (${s.mapel})</option>`).join('');
+    return `
+    <div class="space-y-4">
+        <!-- Pilih Topik & Siswa -->
+        <div class="bg-white rounded-2xl shadow-sm border p-5">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-cog text-rose-500 mr-2"></i>Pilih Topik & Data Siswa</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                    <label class="text-sm font-bold text-gray-600 block mb-1">II. Uraian / Isian</label>
-                    <input type="number" id="ljkEssay" value="0" min="0" max="20" placeholder="0 jika tak ada" class="border-2 border-gray-200 p-2.5 rounded-lg w-full font-bold outline-none focus:border-rose-400">
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Topik Ujian</label>
+                    <select id="ljkScanTopikId" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-bold outline-none focus:border-rose-400">
+                        <option value="">-- Pilih Topik --</option>${scanOptions}
+                    </select>
+                    <p class="text-xs text-gray-400 mt-1">Belum ada? <button onclick="ljkTab='buat';window.renderGuruLJK()" class="text-rose-600 font-bold underline">Buat di tab Buat LJK</button></p>
                 </div>
                 <div>
-                    <button onclick="window.generateTemplateLJK()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold px-6 py-3 rounded-lg shadow-md transition flex justify-center items-center">
-                        <i class="fas fa-magic mr-2"></i> Buat LJK
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Nama Siswa</label>
+                    <input id="ljkScanNama" type="text" placeholder="Contoh: Budi Santoso" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-semibold outline-none focus:border-rose-400">
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500 block mb-1">No. Absen / ID</label>
+                    <input id="ljkScanAbsen" type="text" placeholder="Contoh: 12" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-semibold outline-none focus:border-rose-400">
+                </div>
+            </div>
+        </div>
+
+        <!-- Ambil Gambar -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Upload -->
+            <div class="bg-white rounded-2xl shadow-sm border p-5">
+                <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-upload text-blue-500 mr-2"></i>Upload Foto LJK</h3>
+                <label class="flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-xl p-6 cursor-pointer hover:border-rose-400 hover:bg-rose-50 transition min-h-[120px]">
+                    <i class="fas fa-image text-3xl text-gray-300 mb-2"></i>
+                    <span class="font-bold text-gray-600 text-sm">Klik untuk pilih foto</span>
+                    <small class="text-gray-400 mt-1">Pastikan 4 marker hitam terlihat</small>
+                    <input id="ljkFileUpload" type="file" accept="image/*" class="hidden" onchange="ljkOnFileUpload(event)">
+                </label>
+            </div>
+
+            <!-- Kamera -->
+            <div class="bg-white rounded-2xl shadow-sm border p-5">
+                <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-camera text-green-600 mr-2"></i>Kamera</h3>
+                <video id="ljkCameraFeed" autoplay playsinline muted class="w-full rounded-xl bg-gray-100" style="aspect-ratio:4/3;object-fit:cover;"></video>
+                <div class="flex gap-2 mt-2">
+                    <button onclick="ljkStartCamera()" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 rounded-xl text-sm transition">
+                        <i class="fas fa-video mr-1"></i> Nyalakan
+                    </button>
+                    <button onclick="ljkCapture()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl text-sm transition">
+                        <i class="fas fa-camera mr-1"></i> Ambil Foto
                     </button>
                 </div>
             </div>
         </div>
 
-        <div id="ljkOutputContainer" class="hidden">
-            <div class="flex justify-between items-center mb-4 no-print px-2">
-                <h3 class="font-bold text-gray-700 text-lg"><i class="fas fa-eye mr-2 text-gray-400"></i> Pratinjau Kertas LJK</h3>
-                <button type="button" onclick="downloadPDF('printLJKArea', 'Template_LJK.pdf')" class="bg-gray-800 hover:bg-black text-white px-5 py-2 rounded-lg font-bold shadow text-sm transition">
-                    <i class="fas fa-file-pdf mr-2"></i> Unduh PDF
-                </button>
+        <!-- Ambang Deteksi -->
+        <div class="bg-white rounded-2xl shadow-sm border p-4 flex items-center gap-4">
+            <label class="text-xs font-bold text-gray-600 shrink-0">Ambang Deteksi:</label>
+            <input id="ljkThreshold" type="range" min="0.35" max="0.85" step="0.01" value="0.55" class="flex-1" oninput="document.getElementById('ljkThreshVal').textContent=Math.round(this.value*100)+'%'">
+            <span id="ljkThreshVal" class="text-sm font-bold text-rose-600 w-12 text-right">55%</span>
+        </div>
+
+        <!-- Preview + Analisis + Tombol Scan -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-white rounded-2xl shadow-sm border p-4">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="font-bold text-gray-700 text-sm">Preview Foto</h3>
+                    <button onclick="ljkRotate()" class="text-xs px-3 py-1 border border-gray-300 rounded-full hover:bg-gray-50">Putar 90°</button>
+                </div>
+                <canvas id="ljkPreviewCanvas" width="900" height="1200" class="w-full rounded-xl" style="background:#f0ede8;"></canvas>
             </div>
-            
-            <div class="flex justify-center overflow-x-auto bg-gray-100 p-4 rounded-xl border border-gray-300">
-                <div id="printLJKArea" class="bg-white relative shadow-lg" style="width: 210mm; min-height: 297mm; padding: 15mm; box-sizing: border-box; background: white; color: black;">
-                    <div id="ljkGridArea"></div>
+            <div class="bg-white rounded-2xl shadow-sm border p-4">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="font-bold text-gray-700 text-sm">Hasil Analisis Bubble</h3>
+                    <span id="ljkAnalysisStatus" class="text-xs px-3 py-1 bg-gray-100 text-gray-500 rounded-full font-bold">Belum diproses</span>
+                </div>
+                <canvas id="ljkAnalysisCanvas" width="900" height="1200" class="w-full rounded-xl" style="background:#f0ede8;"></canvas>
+            </div>
+        </div>
+
+        <!-- Tombol Proses -->
+        <div class="flex justify-center">
+            <button onclick="ljkRunScan()" class="bg-rose-600 hover:bg-rose-700 text-white font-bold px-10 py-3 rounded-xl shadow-lg text-base transition">
+                <i class="fas fa-search mr-2"></i> Proses Scan & Koreksi
+            </button>
+        </div>
+
+        <!-- Hasil Scan -->
+        <div id="ljkScanResult" class="hidden bg-white rounded-2xl shadow-sm border p-5">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-check-circle text-green-500 mr-2"></i>Hasil Koreksi</h3>
+            <!-- Skor -->
+            <div class="grid grid-cols-4 gap-3 mb-4">
+                <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+                    <p class="text-xs text-blue-600 font-bold">SKOR</p>
+                    <p id="ljkSkorVal" class="font-extrabold text-blue-700 text-2xl">-</p>
+                </div>
+                <div class="bg-green-50 border border-green-200 rounded-xl p-3 text-center">
+                    <p class="text-xs text-green-600 font-bold">BENAR</p>
+                    <p id="ljkBenarVal" class="font-extrabold text-green-700 text-2xl">-</p>
+                </div>
+                <div class="bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+                    <p class="text-xs text-red-500 font-bold">SALAH</p>
+                    <p id="ljkSalahVal" class="font-extrabold text-red-600 text-2xl">-</p>
+                </div>
+                <div class="bg-gray-50 border rounded-xl p-3 text-center">
+                    <p class="text-xs text-gray-500 font-bold">STATUS</p>
+                    <p id="ljkStatusVal" class="font-bold text-gray-700 text-sm mt-1">-</p>
                 </div>
             </div>
+            <!-- Bubble Grid interaktif -->
+            <div class="mb-3">
+                <p class="text-xs text-gray-400 mb-2"><i class="fas fa-hand-pointer mr-1"></i>Klik bubble untuk koreksi manual</p>
+                <div id="ljkBubbleResultGrid" class="max-h-64 overflow-y-auto border rounded-xl p-3 bg-gray-50 space-y-1"></div>
+            </div>
+            <!-- Tabel per soal -->
+            <div class="overflow-x-auto border rounded-xl">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-500 text-xs">
+                        <tr><th class="p-2 text-left">No</th><th class="p-2">Kunci</th><th class="p-2">Terdeteksi</th><th class="p-2">Hasil</th></tr>
+                    </thead>
+                    <tbody id="ljkResultTableBody"></tbody>
+                </table>
+            </div>
+            <div class="flex gap-3 mt-4">
+                <button onclick="ljkSimpanHasil()" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow transition">
+                    <i class="fas fa-save mr-2"></i> Simpan ke Riwayat
+                </button>
+                <button onclick="ljkExportCsv()" class="flex-1 bg-gray-700 hover:bg-gray-800 text-white font-bold py-3 rounded-xl shadow transition">
+                    <i class="fas fa-file-csv mr-2"></i> Export CSV
+                </button>
+            </div>
         </div>
-    `;
+    </div>`;
 }
 
-window.generateTemplateLJK = function() {
-    let jumlahSoal = parseInt(document.getElementById('ljkJumlahSoal').value);
-    let opsi = parseInt(document.getElementById('ljkOpsi').value);
-    let jumlahEssay = parseInt(document.getElementById('ljkEssay').value) || 0;
+// --------- Init Scan UI ---------
+function ljkInitScanUI() {
+    // placeholder canvases
+    ['ljkPreviewCanvas','ljkAnalysisCanvas'].forEach(id => {
+        const c = document.getElementById(id);
+        if (!c) return;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#f0ede8'; ctx.fillRect(0,0,c.width,c.height);
+        ctx.fillStyle = '#a0a0a0'; ctx.font = '600 22px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(id === 'ljkPreviewCanvas' ? 'Preview foto di sini' : 'Overlay analisis di sini', c.width/2, c.height/2);
+        ctx.textAlign = 'left';
+    });
+    // Restore preview jika ada
+    if (ljkScanState.previewImage) ljkDrawPreview();
+}
 
-    let arrOpsi = ['A', 'B', 'C', 'D', 'E'].slice(0, opsi);
-    let soalPerKolom = Math.ceil(jumlahSoal / 2);
-
-    // 1. BUAT TABEL ABSEN (0-9, 2 baris)
-    let headerAbsen = [0,1,2,3,4,5,6,7,8,9].map(n => `<td style="width: 20px; font-size: 12px; padding-bottom: 2px;">${n}</td>`).join('');
-    let bubbleAbsen = [0,1,2,3,4,5,6,7,8,9].map(n => `<td style="border: 1px solid black; width: 20px; height: 20px; font-size: 11px; font-weight:bold;">${n}</td>`).join('');
-    
-    let absenHtml = `<table style="border-collapse: collapse; text-align: center; margin-left: 10px;">
-        <tr>${headerAbsen}</tr>
-        <tr>${bubbleAbsen}</tr>
-        <tr>${bubbleAbsen}</tr>
-    </table>`;
-
-    // 2. BUAT TABEL PILIHAN GANDA (2 Kolom)
-    let pgHtml = '<div style="display: flex; justify-content: space-between; gap: 30px; margin-top: 15px;">';
-    for(let col = 0; col < 2; col++) {
-        let startNo = (col * soalPerKolom) + 1;
-        let endNo = Math.min((col + 1) * soalPerKolom, jumlahSoal);
-        
-        pgHtml += `<table style="width: 48%; border-collapse: collapse; text-align: center; font-size: 13px;">
-                <thead>
-                    <tr>
-                        <th style="border: 1px solid black; padding: 6px; width: 40px;">No</th>
-                        <th colspan="${opsi}" style="border: 1px solid black; padding: 6px;">Jawaban</th>
-                    </tr>
-                </thead>
-                <tbody>`;
-
-        if (startNo <= jumlahSoal) {
-            for(let i = startNo; i <= endNo; i++) {
-                pgHtml += `<tr><td style="border: 1px solid black; padding: 6px;">${i}</td>`;
-                arrOpsi.forEach(huruf => {
-                    pgHtml += `<td style="border: 1px solid black; padding: 4px;">
-                        <div style="width: 18px; height: 18px; border: 1.5px solid black; border-radius: 4px; margin: 0 auto; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold;">${huruf}</div>
-                    </td>`;
-                });
-                pgHtml += `</tr>`;
-            }
-        }
-        pgHtml += `</tbody></table>`;
-    }
-    pgHtml += '</div>';
-
-    // 3. BUAT AREA ESSAY / URAIAN JIKA ADA
-    let essayHtml = '';
-    if (jumlahEssay > 0) {
-        essayHtml = `
-            <div style="margin-top: 30px; page-break-inside: avoid; font-family: 'Times New Roman', serif;">
-                <h3 style="font-weight: bold; font-size: 15px; margin-bottom: 15px;">II. Uraian / Isian</h3>
-                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
-        for(let i = 1; i <= jumlahEssay; i++) {
-            essayHtml += `
-                <tr>
-                    <td style="width: 30px; vertical-align: top; padding: 8px 0; font-weight:bold;">${i}.</td>
-                    <td style="border-bottom: 1px solid black; padding: 8px 0;"></td>
-                </tr>
-                <tr><td style="padding: 12px 0;"></td><td style="border-bottom: 1px solid black;"></td></tr>
-                <tr><td style="padding: 12px 0;"></td><td style="border-bottom: 1px solid black;"></td></tr>`;
-        }
-        essayHtml += `</table></div>`;
-    }
-
-    // 4. RENDER KE DALAM KERTAS (GABUNGAN)
-    document.getElementById('ljkGridArea').innerHTML = `
-        <div style="text-align: center; margin-bottom: 15px;">
-            <h1 style="font-size: 26px; font-weight: bold; letter-spacing: 2px; font-family: Impact, sans-serif; -webkit-text-stroke: 1px black; color: white; display:inline-block; border: 2px solid black; padding: 5px 20px;">LEMBAR JAWABAN</h1>
-        </div>
-
-        <div style="position: relative; padding: 25px 20px; border: 1px solid transparent;">
-            
-            <div style="position: absolute; top: 0; left: 0; width: 18px; height: 18px; background-color: #000; border-radius: 2px;"></div>
-            <div style="position: absolute; top: 0; right: 0; width: 18px; height: 18px; background-color: #000; border-radius: 2px;"></div>
-            <div style="position: absolute; bottom: 0; left: 0; width: 18px; height: 18px; background-color: #000; border-radius: 2px;"></div>
-            <div style="position: absolute; bottom: 0; right: 0; width: 18px; height: 18px; background-color: #000; border-radius: 2px;"></div>
-
-            <table style="width: 100%; margin-bottom: 25px; font-family: 'Times New Roman', serif; font-size: 14px; font-weight: bold;">
-                <tr>
-                    <td style="width: 70px; padding: 8px 0;">Nama</td>
-                    <td style="width: 10px;">:</td>
-                    <td style="border-bottom: 1px solid black; width: 35%;"></td>
-                    <td style="width: 20px;"></td>
-                    <td style="width: 80px; padding: 8px 0; vertical-align: top;" rowspan="2">No. Absen</td>
-                    <td rowspan="2" style="vertical-align: top;">
-                        ${absenHtml}
-                    </td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px 0;">Mata Ujian</td>
-                    <td>:</td>
-                    <td style="border-bottom: 1px solid black;"></td>
-                    <td></td>
-                </tr>
-            </table>
-
-            <h3 style="font-weight: bold; font-size: 15px; margin-bottom: 10px; font-family: 'Times New Roman', serif;">I. Pilihan Ganda</h3>
-            ${pgHtml}
-        </div>
-
-        ${essayHtml}
-    `;
-
-    document.getElementById('ljkOutputContainer').classList.remove('hidden');
+// --------- File upload ---------
+window.ljkOnFileUpload = async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const img = await ljkLoadImageFile(file);
+    ljkSetPreview(img);
 };
 
-// State untuk mengatur tampilan di dalam tab Riwayat LJK
-window.stateRiwayatScan = 'list'; 
-window.activeScanId = null;
+function ljkSetPreview(img) {
+    ljkScanState.previewImage = img;
+    ljkScanState.previewRotation = 0;
+    ljkDrawPreview();
+    const s = document.getElementById('ljkAnalysisStatus');
+    if (s) s.textContent = 'Siap diproses';
+}
 
+function ljkDrawPreview() {
+    const canvas = document.getElementById('ljkPreviewCanvas');
+    if (!canvas || !ljkScanState.previewImage) return;
+    const ctx = canvas.getContext('2d');
+    const img = ljkScanState.previewImage;
+    const angle = ljkScanState.previewRotation * Math.PI / 180;
+    const isQ = ljkScanState.previewRotation % 180 !== 0;
+    const dw = isQ ? img.height : img.width;
+    const dh = isQ ? img.width  : img.height;
+    const scale = Math.min(canvas.width/dw, canvas.height/dh);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#f0ede8'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.rotate(angle);
+    ctx.drawImage(img, -img.width*scale/2, -img.height*scale/2, img.width*scale, img.height*scale);
+    ctx.restore();
+}
+
+window.ljkRotate = function() {
+    ljkScanState.previewRotation = (ljkScanState.previewRotation + 90) % 360;
+    ljkDrawPreview();
+};
+
+// --------- Kamera ---------
+window.ljkStartCamera = async function() {
+    try {
+        if (ljkScanState.cameraStream) ljkScanState.cameraStream.getTracks().forEach(t=>t.stop());
+        ljkScanState.cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        const video = document.getElementById('ljkCameraFeed');
+        if (video) video.srcObject = ljkScanState.cameraStream;
+    } catch(e) {
+        customAlert('Kamera tidak tersedia atau izin belum diberikan.', 'error');
+    }
+};
+
+window.ljkCapture = async function() {
+    const video = document.getElementById('ljkCameraFeed');
+    if (!video || !video.srcObject) { await ljkStartCamera(); return; }
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth || 1280;
+    c.height = video.videoHeight || 960;
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    const img = await ljkLoadImageUrl(c.toDataURL('image/jpeg', 0.95));
+    ljkSetPreview(img);
+};
+
+// --------- Run Scan (dari app.js logic) ---------
+window.ljkRunScan = function() {
+    if (!ljkScanState.previewImage) {
+        customAlert('Upload atau ambil foto lembar jawaban terlebih dahulu.', 'warning');
+        return;
+    }
+    const topikId = parseInt((document.getElementById('ljkScanTopikId')||{}).value);
+    const topikData = topikId ? getDB(LJK_STORE).find(s => s.id === topikId) : null;
+
+    // Ambil config dari topik yang dipilih atau dari state buat LJK
+    if (topikData) {
+        ljkScanState.questionCount = topikData.jmlPG || 20;
+        ljkScanState.choiceCount   = topikData.jumlahOpsi || 4;
+        ljkScanState.answerKey     = topikData.kunciPG || [];
+        ljkScanState.examTitle     = topikData.topik || 'Ujian';
+        ljkScanState.maxScore      = 100;
+    }
+
+    ljkScanState.detectionThreshold = parseFloat((document.getElementById('ljkThreshold')||{}).value) || 0.55;
+
+    const normalized = ljkNormalizeImage();
+    if (!normalized) {
+        customAlert('Marker hitam tidak terbaca. Coba foto yang lebih terang dan lurus, pastikan 4 marker terlihat.', 'error');
+        return;
+    }
+
+    const results = ljkAnalyzeSheet(normalized);
+    ljkScanState.lastResults = results;
+
+    ljkRenderOverlay(normalized, results);
+    ljkRenderResults(results);
+    const el = document.getElementById('ljkScanResult');
+    if (el) el.classList.remove('hidden');
+    const st = document.getElementById('ljkAnalysisStatus');
+    if (st) st.textContent = 'Scan selesai ✓';
+};
+
+// --------- Normalisasi & Deteksi Marker (dari app.js) ---------
+function ljkNormalizeImage() {
+    const src = ljkScanState.previewImage;
+    const angle = ljkScanState.previewRotation * Math.PI / 180;
+    const isQ = ljkScanState.previewRotation % 180 !== 0;
+
+    const tmp = document.createElement('canvas');
+    tmp.width  = isQ ? src.height : src.width;
+    tmp.height = isQ ? src.width  : src.height;
+    const tCtx = tmp.getContext('2d', { willReadFrequently: true });
+    tCtx.save();
+    tCtx.translate(tmp.width/2, tmp.height/2);
+    tCtx.rotate(angle);
+    tCtx.drawImage(src, -src.width/2, -src.height/2);
+    tCtx.restore();
+
+    const markers = ljkDetectMarkers(tmp);
+    if (!markers) return null;
+
+    const left   = Math.max(0, Math.min(markers.topLeft.x, markers.bottomLeft.x) - 40);
+    const top    = Math.max(0, Math.min(markers.topLeft.y, markers.topRight.y)    - 40);
+    const right  = Math.min(tmp.width,  Math.max(markers.topRight.x, markers.bottomRight.x)  + LJK_MARKER + 40);
+    const bottom = Math.min(tmp.height, Math.max(markers.bottomLeft.y, markers.bottomRight.y) + LJK_MARKER + 40);
+
+    const out = document.createElement('canvas');
+    out.width = LJK_SHEET_W; out.height = LJK_SHEET_H;
+    const oCtx = out.getContext('2d', { willReadFrequently: true });
+    oCtx.fillStyle = '#fff'; oCtx.fillRect(0,0,LJK_SHEET_W,LJK_SHEET_H);
+    oCtx.drawImage(tmp, left, top, right-left, bottom-top, 0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    return out;
+}
+
+function ljkDetectMarkers(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const { width: W, height: H } = canvas;
+    const quads = {
+        topLeft:     { x: 0,              y: 0,              w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
+        topRight:    { x: Math.floor(W*0.7), y: 0,           w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
+        bottomLeft:  { x: 0,              y: Math.floor(H*0.7), w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
+        bottomRight: { x: Math.floor(W*0.7), y: Math.floor(H*0.7), w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
+    };
+    const found = {};
+    for (const [key, q] of Object.entries(quads)) {
+        const data = ctx.getImageData(q.x, q.y, q.w, q.h);
+        let best = null;
+        for (let y = 0; y < q.h - LJK_MARKER; y += 6) {
+            for (let x = 0; x < q.w - LJK_MARKER; x += 6) {
+                const d = ljkSampleDark(data, x, y, LJK_MARKER);
+                if (!best || d > best.darkness) best = { darkness: d, x: q.x+x, y: q.y+y };
+            }
+        }
+        if (!best || best.darkness < 0.38) return null;
+        found[key] = best;
+    }
+    return found;
+}
+
+function ljkSampleDark(imageData, sx, sy, size) {
+    const { data, width } = imageData;
+    let sum = 0, count = 0;
+    for (let y = 0; y < size; y += 4) {
+        for (let x = 0; x < size; x += 4) {
+            const idx = ((sy+y)*width + (sx+x)) * 4;
+            const bright = (data[idx]+data[idx+1]+data[idx+2]) / (255*3);
+            sum += 1 - bright; count++;
+        }
+    }
+    return sum / count;
+}
+
+// --------- Analisis Bubble (dari app.js measureBubbleFill) ---------
+function ljkAnalyzeSheet(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const layout = ljkGetLayout();
+    const threshold = ljkScanState.detectionThreshold;
+    const results = [];
+
+    for (let i = 0; i < ljkScanState.questionCount; i++) {
+        const b = ljkGetBubblePos(i, layout);
+        const fills = [];
+        for (let j = 0; j < ljkScanState.choiceCount; j++) {
+            const cx = b.colX + j * layout.choiceGap;
+            const fill = ljkMeasureFill(ctx, cx, b.y, layout.radius + 4);
+            fills.push({ letter: LJK_LETTERS[j], fill });
+        }
+        const marked = fills.filter(f => f.fill >= threshold);
+        const strongest = fills.reduce((a,b) => a.fill > b.fill ? a : b);
+        let detected = null, status = 'Kosong';
+        if (marked.length === 1) {
+            detected = marked[0].letter;
+            status = detected === ljkScanState.answerKey[i] ? 'Benar' : 'Salah';
+        } else if (marked.length > 1) {
+            detected = 'Ganda'; status = 'Salah';
+        } else if (strongest.fill > threshold * 0.82) {
+            detected = strongest.letter;
+            status = detected === ljkScanState.answerKey[i] ? 'Benar' : 'Salah';
+        }
+        results.push({ number: i+1, key: ljkScanState.answerKey[i] || '-', detected: detected||'-', status, fills });
+    }
+    return results;
+}
+
+function ljkMeasureFill(ctx, cx, cy, radius) {
+    const size = radius * 2;
+    const x = Math.round(cx - radius), y = Math.round(cy - radius);
+    const data = ctx.getImageData(x, y, size, size).data;
+    let dark = 0, total = 0;
+    for (let py = 0; py < size; py++) {
+        for (let px = 0; px < size; px++) {
+            const dx = px-radius, dy = py-radius;
+            if (dx*dx+dy*dy > radius*radius) continue;
+            const idx = (py*size+px)*4;
+            const bright = (data[idx]+data[idx+1]+data[idx+2])/(255*3);
+            if (bright < 0.62) dark++;
+            total++;
+        }
+    }
+    return total ? dark/total : 0;
+}
+
+// --------- Overlay (dari app.js renderAnalysisOverlay) ---------
+function ljkRenderOverlay(normalizedCanvas, results) {
+    const ac = document.getElementById('ljkAnalysisCanvas');
+    if (!ac) return;
+    const ctx = ac.getContext('2d');
+    ctx.clearRect(0,0,ac.width,ac.height);
+    ctx.drawImage(normalizedCanvas, 0, 0, ac.width, ac.height);
+    const scaleX = ac.width/LJK_SHEET_W, scaleY = ac.height/LJK_SHEET_H;
+    const layout = ljkGetLayout();
+    results.forEach((r, i) => {
+        const b = ljkGetBubblePos(i, layout);
+        r.fills.forEach((f, j) => {
+            const cx = (b.colX + j*layout.choiceGap) * scaleX;
+            const cy = b.y * scaleY;
+            const rad = layout.radius * scaleX;
+            const isDetected = r.detected === f.letter;
+            ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI*2);
+            ctx.lineWidth = isDetected ? 4 : 1.5;
+            ctx.strokeStyle = isDetected
+                ? (r.status === 'Benar' ? '#1f8f58' : '#d15e39')
+                : 'rgba(23,35,31,0.25)';
+            ctx.stroke();
+        });
+    });
+}
+
+// --------- Render Hasil ---------
+function ljkRenderResults(results) {
+    const correct = results.filter(r => r.status === 'Benar').length;
+    const incorrect = results.length - correct;
+    const score = results.length ? ((correct/results.length)*ljkScanState.maxScore).toFixed(1) : '0';
+    const nama = (document.getElementById('ljkScanNama')||{}).value || 'Siswa';
+
+    const setEl = (id, val) => { const el=document.getElementById(id); if(el) el.textContent=val; };
+    setEl('ljkSkorVal', score);
+    setEl('ljkBenarVal', correct);
+    setEl('ljkSalahVal', incorrect);
+    setEl('ljkStatusVal', `${nama} — ${correct}/${results.length}`);
+
+    // Bubble grid interaktif
+    const grid = document.getElementById('ljkBubbleResultGrid');
+    if (grid) {
+        grid.innerHTML = '';
+        results.forEach((r, i) => {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-1.5 py-0.5 border-b border-gray-100 last:border-0';
+            row.id = `ljkBRow_${i}`;
+            row.innerHTML = `<span class="text-xs font-mono text-gray-400 w-5 text-right shrink-0">${r.number}</span>` +
+                LJK_LETTERS.slice(0, ljkScanState.choiceCount).map(ch => {
+                    const isDetected = r.detected === ch;
+                    const isKey = r.key === ch;
+                    let cls = 'w-8 h-8 rounded-full border-2 text-xs font-bold transition-all ';
+                    if (isDetected && r.status === 'Benar') cls += 'bg-green-500 text-white border-green-600';
+                    else if (isDetected && r.status !== 'Benar') cls += 'bg-red-500 text-white border-red-600';
+                    else if (isKey && !isDetected) cls += 'bg-green-100 text-green-700 border-green-400';
+                    else cls += 'bg-gray-100 text-gray-500 border-gray-300';
+                    return `<button onclick="ljkToggleAnswer(${i},'${ch}')" class="${cls}">${ch}</button>`;
+                }).join('') +
+                (r.status === 'Benar'
+                    ? '<span class="text-green-500 text-xs font-bold ml-1">✓</span>'
+                    : (r.detected !== '-' ? '<span class="text-red-500 text-xs font-bold ml-1">✗</span>' : ''));
+            grid.appendChild(row);
+        });
+    }
+
+    // Tabel
+    const tbody = document.getElementById('ljkResultTableBody');
+    if (tbody) {
+        tbody.innerHTML = results.map(r => `
+            <tr class="border-b hover:bg-gray-50">
+                <td class="p-2 font-mono text-gray-600">${r.number}</td>
+                <td class="p-2 text-center font-bold">${r.key}</td>
+                <td class="p-2 text-center font-bold">${r.detected}</td>
+                <td class="p-2 text-center">
+                    <span class="px-2 py-1 rounded-full text-xs font-bold ${r.status==='Benar' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${r.status}</span>
+                </td>
+            </tr>`).join('');
+    }
+}
+
+window.ljkToggleAnswer = function(idx, ch) {
+    const r = ljkScanState.lastResults[idx];
+    if (!r) return;
+    r.detected = r.detected === ch ? '-' : ch;
+    r.status = r.detected === r.key ? 'Benar' : (r.detected === '-' ? 'Kosong' : 'Salah');
+    ljkRenderResults(ljkScanState.lastResults);
+};
+
+// --------- Simpan ke Riwayat ---------
+window.ljkSimpanHasil = function() {
+    const results = ljkScanState.lastResults;
+    if (!results.length) { customAlert('Belum ada hasil scan.', 'warning'); return; }
+
+    const topikId = parseInt((document.getElementById('ljkScanTopikId')||{}).value);
+    const nama  = (document.getElementById('ljkScanNama')||{}).value  || 'Siswa';
+    const absen = (document.getElementById('ljkScanAbsen')||{}).value || '-';
+    const correct = results.filter(r => r.status === 'Benar').length;
+    const nilai = results.length ? Math.round((correct/results.length)*100) : 0;
+
+    // Temukan siswa dari data
+    const students = getMyStudents().sort((a,b) => a.nama.localeCompare(b.nama));
+    const noAbsen  = parseInt(absen) || 1;
+    const student  = students[noAbsen-1] || null;
+
+    const hasilEntry = {
+        studentId: student ? student.id : null,
+        namaManual: nama,
+        noAbsen: absen,
+        benar: correct,
+        salah: results.length - correct,
+        nilai,
+        jawaban: results.map(r => r.detected),
+        timestamp: new Date().toISOString(),
+    };
+
+    if (topikId) {
+        let db = getDB(LJK_STORE);
+        const idx = db.findIndex(s => s.id === topikId);
+        if (idx > -1) {
+            if (!db[idx].dataSiswa) db[idx].dataSiswa = [];
+            const existing = db[idx].dataSiswa.findIndex(d => d.noAbsen === absen);
+            if (existing > -1) db[idx].dataSiswa[existing] = hasilEntry;
+            else db[idx].dataSiswa.push(hasilEntry);
+            saveDB(LJK_STORE, db);
+            customAlert(`Nilai ${nama} (${nilai}) berhasil disimpan ke topik "${db[idx].topik}"!`, 'success');
+        }
+    } else {
+        customAlert(`Nilai disimpan sementara. Pilih topik ujian untuk menyimpan ke database.`, 'info');
+    }
+};
+
+// --------- Export CSV ---------
+window.ljkExportCsv = function() {
+    const results = ljkScanState.lastResults;
+    if (!results.length) { customAlert('Belum ada hasil.', 'warning'); return; }
+    const nama  = (document.getElementById('ljkScanNama')||{}).value  || '-';
+    const absen = (document.getElementById('ljkScanAbsen')||{}).value || '-';
+    const lines = [['Nama','No Absen','No Soal','Kunci','Terdeteksi','Status'].join(',')];
+    results.forEach(r => lines.push([`"${nama}"`, absen, r.number, r.key, r.detected, r.status].join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `hasil-ljk-${nama}.csv`; a.click();
+    URL.revokeObjectURL(a.href);
+};
+
+// --------- Helpers ---------
+function ljkLoadImageFile(file) {
+    return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => ljkLoadImageUrl(r.result).then(res).catch(rej);
+        r.onerror = rej; r.readAsDataURL(file);
+    });
+}
+function ljkLoadImageUrl(url) {
+    return new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img); img.onerror = rej; img.src = url;
+    });
+}
+
+// =========================================================================
+// TAB 3: RIWAYAT SCAN  (daftar topik + hasil per siswa)
+// =========================================================================
 function renderTabRiwayatLJK() {
-    if (window.stateRiwayatScan === 'hasil') return renderLJKHasil();
-    if (window.stateRiwayatScan === 'kamera') return renderLJKKamera();
-    
     return renderLJKList();
 }
 
 function renderLJKList() {
-    const scans = getDB('mc_ljk_scan').filter(s => s.guruUsername === currentUserUsername);
-    let rows = scans.map(s => `
+    const scans = getDB(LJK_STORE).filter(s => s.guruUsername === currentUserUsername);
+
+    const rows = scans.map(s => `
         <tr class="border-b hover:bg-gray-50">
-            <td class="p-4 font-bold text-gray-800"><i class="fas fa-file-alt text-rose-500 mr-2"></i>${s.topik}</td>
-            <td class="p-4 text-sm text-gray-600">${s.mapel}</td>
-            <td class="p-4 text-sm text-center">
-                <span class="bg-gray-100 text-gray-700 px-2 py-1 rounded font-bold">${s.jmlPG} PG</span> / 
-                <span class="bg-gray-100 text-gray-700 px-2 py-1 rounded font-bold">${s.jmlEssay} Uraian</span>
+            <td class="p-3 font-bold text-gray-800"><i class="fas fa-file-alt text-rose-400 mr-2"></i>${s.topik}</td>
+            <td class="p-3 text-sm text-gray-600">${s.mapel}</td>
+            <td class="p-3 text-center text-sm">
+                <span class="bg-gray-100 text-gray-700 px-2 py-1 rounded font-bold">${s.jmlPG} PG</span>
             </td>
-            <td class="p-4 text-center">
-                <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">${(s.dataSiswa || []).length} Siswa</span>
+            <td class="p-3 text-center">
+                <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">${(s.dataSiswa||[]).length} Siswa</span>
             </td>
-            <td class="p-4 text-right whitespace-nowrap">
-                <button onclick="window.bukaLJKKamera(${s.id})" class="bg-rose-600 hover:bg-rose-700 text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md mr-1 transition"><i class="fas fa-camera mr-1"></i> Scan</button>
-                <button onclick="window.lihatLJKHasil(${s.id})" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md mr-1 transition"><i class="fas fa-chart-bar mr-1"></i> Hasil</button>
-                <button onclick="window.hapusLJKScan(${s.id})" class="bg-red-100 hover:bg-red-200 text-red-600 px-3 py-2 rounded-lg text-xs font-bold shadow-sm transition" title="Hapus"><i class="fas fa-trash"></i></button>
+            <td class="p-3 text-right whitespace-nowrap">
+                <button onclick="window.lihatLJKHasil(${s.id})" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold mr-1">
+                    <i class="fas fa-chart-bar mr-1"></i>Lihat Hasil
+                </button>
+                <button onclick="window.kirimLJKKeNilai(${s.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold mr-1">
+                    <i class="fas fa-share-square mr-1"></i>Kirim Nilai
+                </button>
+                <button onclick="window.hapusLJKScan(${s.id})" class="bg-red-100 hover:bg-red-200 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold">
+                    <i class="fas fa-trash"></i>
+                </button>
             </td>
         </tr>`).join('');
 
-    let formInput = `
-        <div class="bg-rose-50 border border-rose-200 p-5 rounded-2xl mb-6 shadow-sm no-print">
-            <h3 class="font-bold text-rose-800 mb-4 border-b border-rose-200 pb-2"><i class="fas fa-plus-circle mr-2"></i> Buat Topik Scan (Ujian) Baru</h3>
-            <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
-                <div class="md:col-span-2"><label class="text-xs font-bold text-rose-800 block mb-1">Nama Ujian / Topik</label><input type="text" id="sTopik" placeholder="Contoh: UTS Semester 1" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 font-semibold"></div>
-                <div class="md:col-span-3"><label class="text-xs font-bold text-rose-800 block mb-1">Mata Pelajaran</label><input type="text" id="sMapel" placeholder="Contoh: Matematika" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 font-semibold"></div>
-                <div><label class="text-xs font-bold text-rose-800 block mb-1">Jumlah PG</label><input type="number" id="sJmlPG" value="20" min="1" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
-                <div><label class="text-xs font-bold text-rose-800 block mb-1">Jml Uraian</label><input type="number" id="sJmlEssay" value="5" min="0" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
-                <div><label class="text-xs font-bold text-rose-800 block mb-1">Skor per Soal (PG)</label><input type="number" id="sSkorPG" value="1" min="1" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
-                <div><label class="text-xs font-bold text-rose-800 block mb-1">Jumlah Opsi (A–D/E)</label><select id="sJmlOpsi" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 font-bold bg-white"><option value="4">4 Opsi (A–D)</option><option value="5">5 Opsi (A–E)</option><option value="3">3 Opsi (A–C)</option></select></div>
-                <div class="md:col-span-2 mt-auto">
-                    <button onclick="window.bukaPopupKunciLJK()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-lg shadow-md transition"><i class="fas fa-key mr-2"></i> Input Kunci Jawaban</button>
+    // Form buat topik baru
+    const formTopik = `
+        <div class="bg-rose-50 border border-rose-200 p-5 rounded-2xl mb-5">
+            <h3 class="font-bold text-rose-800 mb-3 text-sm"><i class="fas fa-plus-circle mr-2"></i>Buat Topik Ujian Baru</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="md:col-span-2"><label class="text-xs font-bold text-rose-700 block mb-1">Nama Ujian</label>
+                    <input type="text" id="sTopik" placeholder="Contoh: UTS Semester 1" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm outline-none focus:border-rose-400 font-semibold">
+                </div>
+                <div class="md:col-span-2"><label class="text-xs font-bold text-rose-700 block mb-1">Mata Pelajaran</label>
+                    <input type="text" id="sMapel" placeholder="Contoh: Matematika" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm outline-none focus:border-rose-400 font-semibold">
+                </div>
+                <div><label class="text-xs font-bold text-rose-700 block mb-1">Jumlah PG</label>
+                    <input type="number" id="sJmlPG" value="20" min="1" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm text-center font-bold outline-none focus:border-rose-400">
+                </div>
+                <div><label class="text-xs font-bold text-rose-700 block mb-1">Jumlah Uraian</label>
+                    <input type="number" id="sJmlEssay" value="0" min="0" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm text-center font-bold outline-none focus:border-rose-400">
+                </div>
+                <div><label class="text-xs font-bold text-rose-700 block mb-1">Skor/Soal (PG)</label>
+                    <input type="number" id="sSkorPG" value="1" min="1" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm text-center font-bold outline-none focus:border-rose-400">
+                </div>
+                <div><label class="text-xs font-bold text-rose-700 block mb-1">Opsi Jawaban</label>
+                    <select id="sJmlOpsi" class="border-2 border-rose-100 p-2 rounded-lg w-full text-sm font-bold outline-none focus:border-rose-400 bg-white">
+                        <option value="4">4 Opsi (A-D)</option>
+                        <option value="5">5 Opsi (A-E)</option>
+                    </select>
+                </div>
+                <div class="md:col-span-4 mt-1">
+                    <button onclick="window.bukaPopupKunciLJK()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 rounded-xl shadow transition text-sm">
+                        <i class="fas fa-key mr-2"></i>Input Kunci Jawaban & Simpan
+                    </button>
                 </div>
             </div>
-        </div>
-    `;
+        </div>`;
 
     return `
-        ${formInput}
-        <div class="bg-white rounded-xl shadow-sm border overflow-hidden">
-            <div class="p-4 bg-gray-50 border-b flex justify-between items-center">
-                <h3 class="font-bold text-gray-700"><i class="fas fa-history mr-2 text-rose-500"></i> Daftar LJK Siap Scan</h3>
+        ${formTopik}
+        <div class="bg-white rounded-2xl shadow-sm border overflow-hidden">
+            <div class="p-4 bg-gray-50 border-b">
+                <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-history mr-2 text-rose-500"></i>Daftar Topik Ujian</h3>
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-left min-w-[700px]">
-                    <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
-                        <tr><th class="p-4">Topik Ujian</th><th class="p-4">Mapel</th><th class="p-4 text-center">Komposisi Soal</th><th class="p-4 text-center">Data Scan</th><th class="p-4 text-right">Aksi</th></tr>
+                    <thead class="bg-gray-100 text-gray-500 text-xs uppercase">
+                        <tr><th class="p-3">Topik Ujian</th><th class="p-3">Mapel</th><th class="p-3 text-center">Soal</th><th class="p-3 text-center">Data Scan</th><th class="p-3 text-right">Aksi</th></tr>
                     </thead>
-                    <tbody id="tbodyRiwayatLJK">${rows || '<tr><td colspan="5" class="p-10 text-center text-gray-400 italic">Belum ada topik ujian. Buat topik baru di atas.</td></tr>'}</tbody>
+                    <tbody>${rows || '<tr><td colspan="5" class="p-10 text-center text-gray-400 italic">Belum ada topik. Buat topik baru di atas.</td></tr>'}</tbody>
                 </table>
             </div>
         </div>`;
 }
 
-// -------------------------------------------------------------------------
-// POPUP KUNCI JAWABAN & SIMPAN KE DATABASE
-// -------------------------------------------------------------------------
+window.lihatLJKHasil = function(id) {
+    window.activeScanId = id;
+    window.stateRiwayatScan = 'hasil';
+    ljkTab = 'riwayat';
+    window.renderGuruLJK();
+};
+
+window.hapusLJKScan = async function(id) {
+    if (!await customConfirm('Hapus topik LJK ini beserta semua data hasil scannya?', 'Peringatan Hapus')) return;
+    saveDB(LJK_STORE, getDB(LJK_STORE).filter(s => s.id !== id));
+    window.renderGuruLJK();
+};
+
 window.bukaPopupKunciLJK = function() {
-    let topik = document.getElementById('sTopik').value;
-    let mapel = document.getElementById('sMapel').value;
-    let jmlPG = parseInt(document.getElementById('sJmlPG').value) || 0;
-    let jmlEssay = parseInt(document.getElementById('sJmlEssay').value) || 0;
-    let skorPG = parseFloat(document.getElementById('sSkorPG').value) || 1;
-    let jmlOpsi = parseInt(document.getElementById('sJmlOpsi') ? document.getElementById('sJmlOpsi').value : 4) || 4;
+    const topik = (document.getElementById('sTopik')||{}).value;
+    const mapel = (document.getElementById('sMapel')||{}).value;
+    const jmlPG   = parseInt((document.getElementById('sJmlPG')||{}).value)   || 0;
+    const jmlEssay= parseInt((document.getElementById('sJmlEssay')||{}).value)|| 0;
+    const skorPG  = parseFloat((document.getElementById('sSkorPG')||{}).value) || 1;
+    const jmlOpsi = parseInt((document.getElementById('sJmlOpsi')||{}).value)  || 4;
 
-    if(!topik || !mapel || jmlPG <= 0) { customAlert("Topik, Mapel, dan Jumlah PG wajib diisi dengan benar!", "warning"); return; }
-
-    let html = `<div class="bg-rose-50 p-3 rounded mb-4 text-sm text-rose-800 border border-rose-200">Silakan masukkan Kunci Jawaban untuk <b>${jmlPG} Soal Pilihan Ganda</b>.</div>`;
-    html += '<div class="grid grid-cols-4 md:grid-cols-5 gap-3">';
-    for(let i=1; i<=jmlPG; i++) {
-        html += `
-        <div class="flex items-center border border-gray-300 rounded overflow-hidden">
-            <span class="bg-gray-100 font-bold text-xs p-2 border-r border-gray-300 w-10 text-center">${i}.</span>
-            <select id="kunci_${i}" class="w-full p-2 outline-none font-bold text-center appearance-none cursor-pointer hover:bg-gray-50">
-                <option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option><option value="E">E</option>
-            </select>
+    if (!topik || !mapel || jmlPG <= 0) {
+        customAlert('Topik, Mapel, dan Jumlah PG wajib diisi!', 'warning'); return;
+    }
+    const opts = LJK_LETTERS.slice(0, jmlOpsi).map(l => `<option value="${l}">${l}</option>`).join('');
+    let html = `<div class="bg-rose-50 p-3 rounded mb-3 text-sm text-rose-800 border border-rose-200">
+        Kunci jawaban untuk <b>${jmlPG} Soal PG</b> — ${topik}</div>
+        <div class="grid grid-cols-4 md:grid-cols-6 gap-2">`;
+    for (let i = 1; i <= jmlPG; i++) {
+        html += `<div class="flex items-center border rounded overflow-hidden text-xs">
+            <span class="bg-gray-100 font-bold px-1.5 py-1.5 border-r w-8 text-center">${i}.</span>
+            <select id="kunci_${i}" class="w-full p-1 outline-none font-bold text-center">${opts}</select>
         </div>`;
     }
     html += '</div>';
-
     document.getElementById('modalKurikulumTitle').innerHTML = '<i class="fas fa-key text-rose-600 mr-2"></i> Set Kunci Jawaban LJK';
     document.getElementById('modalKurikulumBody').innerHTML = html;
     document.getElementById('btnSimpanModalKurikulum').onclick = () => window.simpanTopikLJK(topik, mapel, jmlPG, jmlEssay, skorPG, jmlOpsi);
@@ -2405,60 +3065,33 @@ window.bukaPopupKunciLJK = function() {
 
 window.simpanTopikLJK = function(topik, mapel, jmlPG, jmlEssay, skorPG, jmlOpsi) {
     jmlOpsi = jmlOpsi || 4;
-    let kunci = [];
-    for(let i=1; i<=jmlPG; i++) { kunci.push(document.getElementById('kunci_'+i).value); }
-    
-    let data = {
-        id: Date.now(),
-        guruUsername: currentUserUsername,
-        schoolCode: currentSchoolCode,
-        topik: topik,
-        mapel: mapel,
-        jmlPG: jmlPG,
-        jmlEssay: jmlEssay,
-        skorPG: skorPG,
-        kunciPG: kunci,
-        jumlahOpsi: jmlOpsi,
-        tanggal: new Date().toISOString(),
-        dataSiswa: [] 
+    const kunci = [];
+    for (let i = 1; i <= jmlPG; i++) kunci.push((document.getElementById('kunci_'+i)||{}).value || 'A');
+    const data = {
+        id: Date.now(), guruUsername: currentUserUsername, schoolCode: currentSchoolCode,
+        topik, mapel, jmlPG, jmlEssay, skorPG, jumlahOpsi: jmlOpsi,
+        kunciPG: kunci, tanggal: new Date().toISOString(), dataSiswa: []
     };
-
-    let db = getDB('mc_ljk_scan');
-    db.push(data);
-    saveDB('mc_ljk_scan', db);
-    
+    const db = getDB(LJK_STORE); db.push(data); saveDB(LJK_STORE, db);
     document.getElementById('modalInputKurikulum').classList.add('hidden');
-    customAlert("Topik LJK dan Kunci Jawaban berhasil disimpan!", "success");
+    customAlert('Topik LJK dan Kunci Jawaban berhasil disimpan!', 'success');
+    ljkTab = 'riwayat';
     window.renderGuruLJK();
 };
 
-window.hapusLJKScan = async function(id) {
-    if(!await customConfirm("Hapus topik LJK ini beserta semua data hasil scannya?", "Peringatan Hapus")) return;
-    let db = getDB('mc_ljk_scan').filter(s => s.id !== id);
-    saveDB('mc_ljk_scan', db);
-    window.renderGuruLJK();
-};
-
-// -------------------------------------------------------------------------
-// TAMPILAN HASIL (TABEL NILAI SISWA)
-// -------------------------------------------------------------------------
-window.lihatLJKHasil = function(id) {
-    window.activeScanId = id;
-    window.stateRiwayatScan = 'hasil';
-    window.renderGuruLJK();
-};
-
+// Halaman Hasil per Topik
 function renderLJKHasil() {
-    let data = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    if(!data) return '';
-    let students = getMyStudents();
-    
-    let rows = (data.dataSiswa || []).map(ds => {
-        let stu = students.find(s => s.id == ds.studentId);
-        return `
-        <tr class="border-b hover:bg-gray-50">
-            <td class="p-3 font-semibold">${stu ? stu.nama : 'Siswa Tidak Dikenal'}</td>
-            <td class="p-3 text-center text-sm">${stu ? stu.nisn : '-'}</td>
+    // renderLJKList sudah menangani, fungsi ini dipanggil dari stateRiwayatScan
+    const data = getDB(LJK_STORE).find(s => s.id === window.activeScanId);
+    if (!data) return renderLJKList();
+    const students = getMyStudents();
+
+    const rows = (data.dataSiswa||[]).map(ds => {
+        const stu = students.find(s => s.id == ds.studentId);
+        const nama = stu ? stu.nama : (ds.namaManual || `No. ${ds.noAbsen}`);
+        return `<tr class="border-b hover:bg-gray-50">
+            <td class="p-3 font-semibold">${nama}</td>
+            <td class="p-3 text-center text-sm">${ds.noAbsen||'-'}</td>
             <td class="p-3 text-center font-bold text-green-600">${ds.benar}</td>
             <td class="p-3 text-center font-bold text-red-600">${ds.salah}</td>
             <td class="p-3 text-center font-extrabold text-blue-700 text-lg">${ds.nilai}</td>
@@ -2466,715 +3099,119 @@ function renderLJKHasil() {
     }).join('');
 
     return `
-        <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div class="bg-white rounded-2xl shadow-sm border">
             <div class="p-4 bg-gray-50 border-b flex justify-between items-center rounded-t-2xl">
-                <button onclick="window.stateRiwayatScan='list'; window.renderGuruLJK()" class="text-gray-600 hover:text-blue-600 font-bold px-3 py-1 bg-white border rounded shadow-sm"><i class="fas fa-arrow-left mr-2"></i> Kembali</button>
-                <h3 class="font-bold text-gray-800 text-lg"><i class="fas fa-chart-bar text-blue-500 mr-2"></i> Hasil LJK: ${data.topik}</h3>
+                <button onclick="window.stateRiwayatScan='list'; window.renderGuruLJK()" class="text-gray-600 hover:text-blue-600 font-bold px-3 py-1 bg-white border rounded shadow-sm text-sm">
+                    <i class="fas fa-arrow-left mr-1"></i>Kembali
+                </button>
+                <h3 class="font-bold text-gray-800"><i class="fas fa-chart-bar text-blue-500 mr-2"></i>${data.topik}</h3>
             </div>
-            
-            <div class="p-6">
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-lg text-center"><p class="text-xs text-blue-600 font-bold uppercase">Mata Pelajaran</p><p class="font-bold text-gray-800">${data.mapel}</p></div>
-                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-lg text-center"><p class="text-xs text-blue-600 font-bold uppercase">Jumlah Pilihan Ganda</p><p class="font-bold text-gray-800">${data.jmlPG} Soal</p></div>
-                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-lg text-center"><p class="text-xs text-blue-600 font-bold uppercase">Skor Maksimal PG</p><p class="font-bold text-gray-800">${data.jmlPG * data.skorPG}</p></div>
-                    <div class="bg-green-50 border border-green-200 p-3 rounded-lg text-center"><p class="text-xs text-green-600 font-bold uppercase">Total Data Terscan</p><p class="font-bold text-green-800 text-lg">${(data.dataSiswa || []).length} LJK</p></div>
+            <div class="p-5">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-xl text-center text-xs"><p class="text-blue-600 font-bold">Mapel</p><p class="font-bold text-gray-800 mt-1">${data.mapel}</p></div>
+                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-xl text-center text-xs"><p class="text-blue-600 font-bold">Soal PG</p><p class="font-bold text-gray-800 mt-1">${data.jmlPG}</p></div>
+                    <div class="bg-blue-50 border border-blue-200 p-3 rounded-xl text-center text-xs"><p class="text-blue-600 font-bold">Skor Maks</p><p class="font-bold text-gray-800 mt-1">${data.jmlPG * data.skorPG}</p></div>
+                    <div class="bg-green-50 border border-green-200 p-3 rounded-xl text-center text-xs"><p class="text-green-600 font-bold">Terscan</p><p class="font-bold text-green-800 text-lg mt-1">${(data.dataSiswa||[]).length}</p></div>
                 </div>
-
-                <div class="overflow-x-auto border rounded-xl mb-6">
+                <div class="overflow-x-auto border rounded-xl mb-4">
                     <table class="w-full text-left">
-                        <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
-                            <tr><th class="p-3">Nama Siswa</th><th class="p-3 text-center">NISN</th><th class="p-3 text-center text-green-600"><i class="fas fa-check-circle mr-1"></i> Benar</th><th class="p-3 text-center text-red-600"><i class="fas fa-times-circle mr-1"></i> Salah</th><th class="p-3 text-center text-blue-700"><i class="fas fa-star mr-1"></i> Nilai Akhir (Skala 100)</th></tr>
+                        <thead class="bg-gray-100 text-gray-500 text-xs uppercase">
+                            <tr><th class="p-3">Nama Siswa</th><th class="p-3 text-center">No. Absen</th><th class="p-3 text-center text-green-600">Benar</th><th class="p-3 text-center text-red-600">Salah</th><th class="p-3 text-center text-blue-700">Nilai</th></tr>
                         </thead>
-                        <tbody>${rows || '<tr><td colspan="5" class="p-10 text-center text-gray-400 italic">Belum ada LJK yang dipindai. Silakan klik menu Scan.</td></tr>'}</tbody>
+                        <tbody>${rows||'<tr><td colspan="5" class="p-10 text-center text-gray-400 italic">Belum ada data scan.</td></tr>'}</tbody>
                     </table>
                 </div>
-
-                <div class="flex justify-end no-print">
-                    <button onclick="window.kirimLJKKeNilai(${data.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg transition text-lg flex items-center">
-                        <i class="fas fa-share-square mr-2"></i> Kirim Semua Nilai ke Fitur Penilaian
+                <div class="flex justify-end">
+                    <button onclick="window.kirimLJKKeNilai(${data.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-xl font-bold shadow transition">
+                        <i class="fas fa-share-square mr-2"></i>Kirim Semua Nilai ke Penilaian
                     </button>
                 </div>
             </div>
-        </div>
-    `;
-}
-
-// -------------------------------------------------------------------------
-// TAMPILAN KAMERA SCANNER (PERSIAPAN OPENCV)
-// Variable global untuk menyimpan stream kamera agar bisa dimatikan
-window.kameraStream = null;
-window.tempCaptureData = null; // Menyimpan data sementara sebelum di-klik "Simpan"
-
-// -------------------------------------------------------------------------
-// TAMPILAN KAMERA SCANNER (AKSES KAMERA ASLI & POPUP HASIL)
-// -------------------------------------------------------------------------
-window.bukaLJKKamera = function(id) {
-    if (!window.isOpenCvReady) {
-        customAlert("Sistem Scanner (OpenCV) sedang memuat data di latar belakang. Mohon tunggu beberapa detik lalu coba lagi.", "warning");
-        return;
-    }
-
-    window.activeScanId = id;
-    window.stateRiwayatScan = 'kamera';
-    window.renderGuruLJK();
-
-    setTimeout(() => {
-        const video = document.getElementById('videoLJK');
-        if (!video) return;
-
-        if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-            .then(function(stream) {
-                window.kameraStream = stream;
-                video.srcObject = stream;
-                document.getElementById('kameraLoading').classList.add('hidden');
-            })
-            .catch(function(err) {
-                navigator.mediaDevices.getUserMedia({ video: true })
-                .then(function(stream) {
-                    window.kameraStream = stream;
-                    video.srcObject = stream;
-                    document.getElementById('kameraLoading').classList.add('hidden');
-                })
-                .catch(function(fallbackErr) {
-                    document.getElementById('kameraLoading').innerHTML = `<i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-2"></i><br><span class="text-sm font-bold">Kamera Sedang Digunakan / Error</span>`;
-                });
-            });
-        } else {
-            document.getElementById('kameraLoading').innerHTML = "Browser Anda tidak mendukung akses API Kamera.";
-        }
-    }, 500);
-};
-
-window.uploadGambarlLJK = function(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const canvas = document.getElementById('canvasHasil');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const reader = new FileReader();
-
-    reader.onload = function(e) {
-        const img = new Image();
-        img.onload = function() {
-            // Resize agar proses OpenCV tidak terlalu berat
-            let maxW = 1200, maxH = 1600;
-            let w = img.width, h = img.height;
-            if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
-            if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
-
-            canvas.width = w;
-            canvas.height = h;
-            ctx.drawImage(img, 0, 0, w, h);
-
-            const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-            let kunci = dataScan.kunciPG || [];
-            let jumlahOpsi = dataScan.jumlahOpsi || 4;
-
-            // OMR dengan kunci untuk overlay warna
-            let omrHasil = deteksiBubbleOMR(canvas, dataScan.jmlPG, jumlahOpsi, kunci);
-            window._omrJawaban = [...(omrHasil.jawaban)];
-
-            let noAbsenDeteksi = omrHasil.noAbsen !== null ? omrHasil.noAbsen : 1;
-            document.getElementById('editAbsen').value = noAbsenDeteksi;
-
-            // Render bubble grid
-            document.getElementById('gridEditJawaban').innerHTML = renderBubbleGrid(window._omrJawaban, kunci, dataScan.jmlPG, jumlahOpsi);
-            document.getElementById('popupHasilScan').classList.remove('hidden');
-            window.kalkulasiUlangNilai();
-        };
-        img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
-};
-
-window.tutupKameraLJK = function() {
-    if(window.kameraStream) {
-        window.kameraStream.getTracks().forEach(track => track.stop());
-        window.kameraStream = null;
-    }
-    window.stateRiwayatScan = 'list'; 
-    window.renderGuruLJK();
-};
-
-function renderLJKKamera() {
-    let data = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    return `
-        <div class="bg-gray-900 rounded-2xl shadow-2xl overflow-hidden text-white relative h-[85vh] flex flex-col">
-            <div class="absolute top-0 left-0 w-full p-4 flex justify-between items-center z-20 bg-gradient-to-b from-black/80 to-transparent">
-                <button onclick="window.tutupKameraLJK()" class="bg-black/50 hover:bg-black/80 text-white font-bold px-4 py-2 rounded-full backdrop-blur transition"><i class="fas fa-arrow-left mr-2"></i> Tutup</button>
-                <div class="text-right drop-shadow-md">
-                    <h3 class="font-bold text-lg">${data.topik}</h3>
-                    <p class="text-[10px] text-yellow-300">Paskan LJK ke area kamera</p>
-                </div>
-            </div>
-            
-            <div class="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
-                <div id="kameraLoading" class="absolute inset-0 flex flex-col items-center justify-center z-10"><i class="fas fa-spinner fa-spin text-5xl text-gray-400 mb-4"></i></div>
-                <video id="videoLJK" class="w-full h-full object-cover relative z-0" autoplay muted playsinline></video>
-
-                <!-- Panduan posisi LJK (overlay grid) -->
-                <div class="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
-                    <div style="width:85%; height:88%; border: 3px solid rgba(74,222,128,0.85); border-radius:8px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);">
-                        <div class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-green-400 rounded-tl-md"></div>
-                        <div class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-green-400 rounded-tr-md"></div>
-                        <div class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-green-400 rounded-bl-md"></div>
-                        <div class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-green-400 rounded-br-md"></div>
-                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-green-300 text-xs font-bold opacity-60 tracking-widest">PASKAN LJK DI SINI</div>
-                    </div>
-                </div>
-
-                <div class="absolute bottom-4 w-full flex justify-center items-center gap-4 z-20">
-                    <!-- Upload dari galeri sebagai alternatif -->
-                    <label class="bg-gray-700/80 hover:bg-gray-600 text-white px-4 py-3 rounded-full border-2 border-white/30 flex items-center cursor-pointer transition font-bold text-sm" title="Upload dari Galeri">
-                        <i class="fas fa-image mr-2"></i> Galeri
-                        <input type="file" accept="image/*" class="hidden" onchange="window.uploadGambarlLJK(event)">
-                    </label>
-                    <button onclick="window.captureDanEvaluasiLJK()" class="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-full border-4 border-white/50 shadow-[0_0_20px_rgba(34,197,94,0.8)] flex items-center justify-center transition transform hover:scale-105 font-bold text-lg">
-                        <i class="fas fa-camera mr-2"></i> Scan
-                    </button>
-                </div>
-            </div>
-
-            <div id="popupHasilScan" class="absolute inset-0 bg-black/90 z-50 hidden flex-col items-center justify-center p-2 md:p-4 backdrop-blur-sm">
-                <div class="bg-white text-gray-800 rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col" style="max-height:92vh;">
-                    <div class="p-3 bg-blue-600 text-white flex justify-between items-center">
-                        <h3 class="font-bold text-lg"><i class="fas fa-check-circle mr-2"></i> Verifikasi Hasil Scan</h3>
-                        <button onclick="document.getElementById('popupHasilScan').classList.add('hidden')" class="text-white hover:text-red-300 text-2xl outline-none">&times;</button>
-                    </div>
-                    
-                    <!-- Layout 2 panel: kiri = gambar asli, kanan = bubble sheet -->
-                    <div class="flex flex-col md:flex-row h-full overflow-hidden bg-gray-50" style="max-height: calc(90vh - 130px)">
-
-                        <!-- PANEL KIRI: Gambar hasil scan berwarna -->
-                        <div class="w-full md:w-1/2 flex flex-col bg-black overflow-hidden">
-                            <canvas id="canvasHasil" class="w-full h-auto object-contain flex-1" style="max-height: 55vh; md:max-height: 100%;"></canvas>
-                            <!-- Info overlay seperti ZipGrade -->
-                            <div id="infoSiswaCard" class="hidden bg-white/95 px-4 py-3 border-t text-sm">
-                                <div class="flex justify-between items-start">
-                                    <div>
-                                        <p class="text-[10px] text-gray-400 uppercase font-bold tracking-wide">Nama Ujian</p>
-                                        <p class="font-bold text-gray-800 text-sm" id="infoMapel">-</p>
-                                    </div>
-                                    <div class="text-right">
-                                        <p class="text-[10px] text-gray-400 uppercase font-bold tracking-wide">No. Absen</p>
-                                        <p class="font-bold text-gray-800 text-sm" id="infoAbsen">-</p>
-                                    </div>
-                                </div>
-                                <div class="mt-1">
-                                    <p class="text-[10px] text-gray-400 uppercase font-bold tracking-wide">Nama Siswa</p>
-                                    <p class="font-bold text-blue-700 text-base" id="infoNama">-</p>
-                                </div>
-                                <div class="mt-2 flex gap-3 text-center">
-                                    <div class="flex-1 bg-green-50 rounded-lg py-1 border border-green-200">
-                                        <p class="text-[9px] text-green-600 font-bold">BENAR</p>
-                                        <p id="skorBenar" class="font-extrabold text-green-700 text-lg leading-tight">0</p>
-                                    </div>
-                                    <div class="flex-1 bg-red-50 rounded-lg py-1 border border-red-200">
-                                        <p class="text-[9px] text-red-600 font-bold">SALAH</p>
-                                        <p id="skorSalah" class="font-extrabold text-red-700 text-lg leading-tight">0</p>
-                                    </div>
-                                    <div class="flex-1 bg-blue-600 rounded-lg py-1">
-                                        <p class="text-[9px] text-blue-200 font-bold">NILAI</p>
-                                        <p id="skorAkhir" class="font-extrabold text-white text-lg leading-tight">0</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- PANEL KANAN: Bubble answer sheet (seperti gambar 2) -->
-                        <div class="w-full md:w-1/2 flex flex-col bg-white border-l overflow-hidden">
-                            <!-- Header: No Absen + Nama -->
-                            <div class="px-4 py-2 border-b bg-gray-50 shrink-0">
-                                <p class="text-[10px] text-gray-400 uppercase font-bold mb-1">No. Absen Siswa</p>
-                                <div class="flex items-center gap-2">
-                                    <input type="number" id="editAbsen" class="border-2 border-blue-300 p-1.5 w-16 text-center rounded-lg font-bold text-blue-700 outline-none text-sm" min="1" onchange="window.kalkulasiUlangNilai()">
-                                    <div id="namaSiswaDeteksi" class="font-bold text-gray-800 text-sm bg-blue-50 px-3 py-1.5 rounded-lg flex-1 truncate border border-blue-100">Mendeteksi...</div>
-                                </div>
-                                <p class="text-[10px] text-gray-400 mt-1.5"><i class="fas fa-hand-pointer mr-1"></i>Klik bubble untuk koreksi manual • <span class="text-green-600">●Benar</span> <span class="text-red-500">●Salah</span></p>
-                            </div>
-                            <!-- Bubble grid scrollable -->
-                            <div id="gridEditJawaban" class="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="p-3 border-t flex gap-2 bg-white">
-                        <button onclick="document.getElementById('popupHasilScan').classList.add('hidden')" class="w-1/3 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-3 rounded-xl transition">Batal</button>
-                        <button onclick="window.simpanHasilCapture()" class="w-2/3 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow-md transition flex items-center justify-center">
-                            <i class="fas fa-save mr-2"></i> Simpan Nilai
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-// -------------------------------------------------------------------------
-// TAHAP 1: PEMROSESAN GAMBAR (OPENCV) & DETEKSI BUBBLE OMR SUNGGUHAN
-// -------------------------------------------------------------------------
-
-/**
- * Fungsi utama OMR: deteksi bubble yang diisi menggunakan OpenCV.
- * Mengembalikan array jawaban ['A','B','C','D','-'] per soal.
- * Juga mengembalikan noAbsen yang terdeteksi dari bubble nomor absen.
- */
-function deteksiBubbleOMR(srcCanvas, jmlPG, jumlahOpsi, kunciJawaban) {
-    // hasil: jawaban[], noAbsen, bubbleCoords (untuk overlay)
-    let hasil = { jawaban: [], noAbsen: null, bubbleCoords: [] };
-    if (!window.isOpenCvReady) return hasil;
-
-    try {
-        let src = cv.imread(srcCanvas);
-        let gray = new cv.Mat();
-        let blur = new cv.Mat();
-        let thresh = new cv.Mat();
-        let warped = new cv.Mat();
-        let warpedColor = new cv.Mat(); // gambar ASLI berwarna yang di-warp
-
-        // 1. Grayscale
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-
-        // 2. Blur ringan untuk noise reduction
-        let ksize = new cv.Size(5, 5);
-        cv.GaussianBlur(gray, blur, ksize, 0);
-
-        // 3. Threshold Otsu
-        cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
-
-        // 4. Cari kontur terbesar (bingkai LJK)
-        let contours = new cv.MatVector();
-        let hierarchy = new cv.Mat();
-        cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        let bestContour = null;
-        let maxArea = 0;
-        for (let i = 0; i < contours.size(); i++) {
-            let c = contours.get(i);
-            let area = cv.contourArea(c);
-            if (area > maxArea) { maxArea = area; bestContour = c; }
-        }
-
-        // 5. Perspective Transform - luruskan LJK, terapkan ke GAMBAR BERWARNA juga
-        let W = srcCanvas.width, H = srcCanvas.height;
-        let dstW = 600, dstH = 800;
-        let dsize = new cv.Size(dstW, dstH);
-
-        if (bestContour && maxArea > (W * H * 0.05)) {
-            let peri = cv.arcLength(bestContour, true);
-            let approx = new cv.Mat();
-            cv.approxPolyDP(bestContour, approx, 0.02 * peri, true);
-
-            if (approx.rows === 4) {
-                let pts = [];
-                for (let i = 0; i < 4; i++) {
-                    pts.push({ x: approx.data32S[i * 2], y: approx.data32S[i * 2 + 1] });
-                }
-                pts.sort((a, b) => (a.x + a.y) - (b.x + b.y));
-                let tl = pts[0];
-                pts.sort((a, b) => (b.x - b.y) - (a.x - a.y));
-                let tr = pts[0];
-                pts.sort((a, b) => (b.x + b.y) - (a.x + a.y));
-                let br = pts[0];
-                pts.sort((a, b) => (a.x - a.y) - (b.x - b.y));
-                let bl = pts[0];
-
-                let srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
-                let dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, dstW, 0, dstW, dstH, 0, dstH]);
-                let M = cv.getPerspectiveTransform(srcPts, dstPts);
-
-                // Warp gambar threshold (untuk analisis fill)
-                cv.warpPerspective(thresh, warped, M, dsize);
-                // Warp gambar ASLI berwarna (untuk display)
-                cv.warpPerspective(src, warpedColor, M, dsize);
-
-                srcPts.delete(); dstPts.delete(); M.delete();
-            } else {
-                thresh.copyTo(warped);
-                src.copyTo(warpedColor);
-            }
-            approx.delete();
-        } else {
-            thresh.copyTo(warped);
-            src.copyTo(warpedColor);
-        }
-
-        // 6. DETEKSI BUBBLE PILIHAN GANDA
-        let wW = warped.cols, wH = warped.rows;
-        let opsiLabels = ['A', 'B', 'C', 'D', 'E'].slice(0, jumlahOpsi);
-        let soalPerKolom = Math.ceil(jmlPG / 2);
-
-        let pgTopRatio = 0.28;
-        let pgBotRatio = 0.92;
-        let pgAreaH = wH * (pgBotRatio - pgTopRatio);
-        let rowH = pgAreaH / soalPerKolom;
-
-        let colOffsets = [0.02, 0.51];
-        let colWidth = 0.47;
-        let noColW = 0.12;
-
-        // Simpan semua koordinat bubble untuk overlay
-        let allBubbles = []; // { soalIdx, opsiIdx, cx, cy, bw, bh, fill, dipilih }
-
-        for (let col = 0; col < 2; col++) {
-            let startNo = col * soalPerKolom;
-            let endNo = Math.min(startNo + soalPerKolom, jmlPG);
-            let colX = wW * colOffsets[col];
-            let cellW = (wW * colWidth - wW * noColW) / jumlahOpsi;
-
-            for (let r = 0; r < (endNo - startNo); r++) {
-                let soalIdx = startNo + r;
-                let cellY = wH * pgTopRatio + r * rowH;
-                let maxFill = -1;
-                let maxOpsi = -1;
-                let fillArr = [];
-
-                for (let o = 0; o < jumlahOpsi; o++) {
-                    let bx = Math.round(colX + wW * noColW + o * cellW + cellW * 0.1);
-                    let by = Math.round(cellY + rowH * 0.15);
-                    let bw = Math.round(cellW * 0.8);
-                    let bh = Math.round(rowH * 0.7);
-
-                    bx = Math.max(0, Math.min(bx, wW - 2));
-                    by = Math.max(0, Math.min(by, wH - 2));
-                    bw = Math.max(1, Math.min(bw, wW - bx));
-                    bh = Math.max(1, Math.min(bh, wH - by));
-
-                    let roi = warped.roi(new cv.Rect(bx, by, bw, bh));
-                    let total = cv.countNonZero(roi);
-                    let ratio = total / (bw * bh);
-                    roi.delete();
-
-                    fillArr.push({ o, bx, by, bw, bh, ratio });
-                    if (ratio > maxFill) { maxFill = ratio; maxOpsi = o; }
-                }
-
-                hasil.jawaban[soalIdx] = (maxFill > 0.15) ? opsiLabels[maxOpsi] : '-';
-
-                // Simpan koordinat semua bubble soal ini
-                fillArr.forEach(f => {
-                    allBubbles.push({
-                        soalIdx,
-                        opsi: opsiLabels[f.o],
-                        cx: f.bx + f.bw / 2,
-                        cy: f.by + f.bh / 2,
-                        r: Math.min(f.bw, f.bh) / 2,
-                        dipilih: (f.o === maxOpsi && maxFill > 0.15)
-                    });
-                });
-            }
-        }
-
-        hasil.bubbleCoords = allBubbles;
-
-        // 7. DETEKSI NOMOR ABSEN
-        let absenTop = wH * 0.05;
-        let absenH = wH * 0.15;
-        let absenLeft = wW * 0.55;
-        let absenRight = wW * 0.95;
-        let absenW = absenRight - absenLeft;
-        let digitW = absenW / 10;
-        let digitRowH = absenH / 2;
-
-        let absenDigits = [null, null];
-        for (let row = 0; row < 2; row++) {
-            let maxFillA = -1;
-            let digitTerpilih = null;
-            for (let d = 0; d < 10; d++) {
-                let bx = Math.round(absenLeft + d * digitW + digitW * 0.1);
-                let by = Math.round(absenTop + row * digitRowH + digitRowH * 0.15);
-                let bw = Math.round(digitW * 0.8);
-                let bh = Math.round(digitRowH * 0.7);
-                bx = Math.max(0, Math.min(bx, wW - 2));
-                by = Math.max(0, Math.min(by, wH - 2));
-                bw = Math.max(1, Math.min(bw, wW - bx));
-                bh = Math.max(1, Math.min(bh, wH - by));
-                let roi = warped.roi(new cv.Rect(bx, by, bw, bh));
-                let total = cv.countNonZero(roi);
-                let ratio = total / (bw * bh);
-                roi.delete();
-                if (ratio > maxFillA && ratio > 0.15) { maxFillA = ratio; digitTerpilih = d; }
-            }
-            absenDigits[row] = digitTerpilih;
-        }
-        if (absenDigits[0] !== null && absenDigits[1] !== null) hasil.noAbsen = absenDigits[0] * 10 + absenDigits[1];
-        else if (absenDigits[1] !== null) hasil.noAbsen = absenDigits[1];
-        else if (absenDigits[0] !== null) hasil.noAbsen = absenDigits[0];
-
-        // 8. GAMBAR OVERLAY di atas gambar BERWARNA (seperti ZipGrade)
-        // Gambar lingkaran hijau (benar) / merah (salah) di setiap bubble yang dipilih
-        allBubbles.forEach(b => {
-            if (!b.dipilih) return;
-            let soalIdx = b.soalIdx;
-            let kunci = (kunciJawaban && kunciJawaban[soalIdx]) || null;
-            let isBenar = kunci && b.opsi === kunci;
-
-            // Warna: hijau jika benar, merah jika salah, abu-abu jika kunci tidak diset
-            let warna;
-            if (!kunci) warna = new cv.Scalar(100, 180, 255, 255); // biru = belum ada kunci
-            else if (isBenar) warna = new cv.Scalar(50, 200, 80, 255); // hijau = benar
-            else warna = new cv.Scalar(60, 60, 220, 255); // merah (BGR) = salah
-
-            let center = new cv.Point(Math.round(b.cx), Math.round(b.cy));
-            let radius = Math.round(b.r + 3);
-            cv.circle(warpedColor, center, radius, warna, 3);
-        });
-
-        // 9. Tampilkan gambar BERWARNA + overlay ke canvas
-        cv.imshow('canvasHasil', warpedColor);
-
-        // Cleanup
-        src.delete(); gray.delete(); blur.delete(); thresh.delete();
-        warped.delete(); warpedColor.delete();
-        contours.delete(); hierarchy.delete();
-
-    } catch (err) {
-        console.error("OMR Error:", err);
-        // Fallback: tampilkan foto asli tanpa proses
-        try { cv.imshow('canvasHasil', cv.imread(srcCanvas)); } catch(e2) {}
-    }
-
-    return hasil;
-}
-
-// Helper: render grid bubble buttons (seperti gambar 2)
-function renderBubbleGrid(jawaban, kunci, jmlPG, jumlahOpsi) {
-    let opsiLabels = ['A', 'B', 'C', 'D', 'E'].slice(0, jumlahOpsi);
-    let html = '';
-    for (let i = 0; i < jmlPG; i++) {
-        let j = jawaban[i] || '-';
-        let k = kunci[i] || null;
-        let isBenar = k && j === k;
-        let isSalah = k && j !== k && j !== '-';
-        let statusIcon = '';
-        if (isBenar) statusIcon = '<span class="ml-1 text-green-500 font-bold text-xs">✓</span>';
-        else if (isSalah) statusIcon = '<span class="ml-1 text-red-500 font-bold text-xs">✗</span>';
-
-        let bubblesHtml = opsiLabels.map(o => {
-            let dipilih = (j === o);
-            let isKunci = (k === o);
-            let cls = '';
-            if (dipilih && isBenar) cls = 'bg-green-500 text-white border-green-600 shadow-md'; // dipilih & benar
-            else if (dipilih && !isBenar) cls = 'bg-red-500 text-white border-red-600 shadow-md'; // dipilih & salah
-            else if (isKunci && !dipilih) cls = 'bg-green-100 text-green-700 border-green-400'; // kunci tapi tidak dipilih
-            else cls = 'bg-gray-100 text-gray-500 border-gray-300'; // biasa
-            return `<button onclick="window.pilihJawaban(${i},'${o}')"
-                class="w-8 h-8 rounded-full border-2 text-xs font-bold transition-all ${cls}">${o}</button>`;
-        }).join('');
-
-        // Nomor soal
-        let noLabel = (i + 1).toString().padStart(3, ' ');
-        html += `
-        <div class="flex items-center gap-1.5 py-1 border-b border-gray-100 last:border-0" id="row_soal_${i}">
-            <span class="text-xs text-gray-500 font-mono w-6 text-right shrink-0">${i+1}</span>
-            ${bubblesHtml}
-            ${statusIcon}
         </div>`;
-    }
-    return html;
 }
 
-window.pilihJawaban = function(soalIdx, opsi) {
-    // Toggle: klik lagi pada yang sudah dipilih = kosongkan
-    const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    let jumlahOpsi = dataScan.jumlahOpsi || 4;
-    let kunci = dataScan.kunciPG || [];
+// Override renderTabRiwayatLJK to support 'hasil' state
+const _origRenderTabRiwayat = renderTabRiwayatLJK;
+// sudah di-handle di atas dengan if check di renderTabRiwayatLJK
 
-    // Baca jawaban saat ini
-    let jawabanSaatIni = window._omrJawaban || [];
-    if (jawabanSaatIni[soalIdx] === opsi) {
-        jawabanSaatIni[soalIdx] = '-'; // toggle off
-    } else {
-        jawabanSaatIni[soalIdx] = opsi;
-    }
-    window._omrJawaban = jawabanSaatIni;
-
-    // Re-render grid
-    document.getElementById('gridEditJawaban').innerHTML = renderBubbleGrid(jawabanSaatIni, kunci, dataScan.jmlPG, jumlahOpsi);
-    window.kalkulasiUlangNilai();
-};
-
-window.captureDanEvaluasiLJK = function() {
-    const video = document.getElementById('videoLJK');
-    const canvas = document.getElementById('canvasHasil');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-    if (!video.videoWidth) { customAlert("Kamera belum siap.", "warning"); return; }
-
-    // 1. Ambil frame dari kamera
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // 2. Ambil data LJK
-    const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    let kunci = dataScan.kunciPG || [];
-    let jumlahOpsi = dataScan.jumlahOpsi || 4;
-
-    // 3. Jalankan OMR dengan pass kunci (untuk warna overlay)
-    let omrHasil = deteksiBubbleOMR(canvas, dataScan.jmlPG, jumlahOpsi, kunci);
-
-    // 4. Simpan jawaban ke state global
-    window._omrJawaban = [...(omrHasil.jawaban)];
-
-    // 5. No. Absen
-    let noAbsenDeteksi = omrHasil.noAbsen !== null ? omrHasil.noAbsen : 1;
-    document.getElementById('editAbsen').value = noAbsenDeteksi;
-
-    // 6. Render grid bubble (seperti gambar 2)
-    document.getElementById('gridEditJawaban').innerHTML = renderBubbleGrid(window._omrJawaban, kunci, dataScan.jmlPG, jumlahOpsi);
-
-    // 7. Tampilkan popup dan hitung nilai
-    document.getElementById('popupHasilScan').classList.remove('hidden');
-    window.kalkulasiUlangNilai();
-};
-
-// -------------------------------------------------------------------------
-// TAHAP 2: KALKULASI REAL-TIME JIKA GURU MENGUBAH JAWABAN/ABSEN DI POPUP
-// -------------------------------------------------------------------------
-window.kalkulasiUlangNilai = function() {
-    const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    let absenTerdeteksi = parseInt(document.getElementById('editAbsen').value) || 1;
-
-    // 1. Cari Siswa berdasarkan No. Absen (Urutan Abjad)
-    let students = getMyStudents().sort((a,b) => a.nama.localeCompare(b.nama));
-    let studentTarget = students[absenTerdeteksi - 1];
-
-    if (!studentTarget) {
-        document.getElementById('namaSiswaDeteksi').innerText = "No. Absen tidak ditemukan!";
-        document.getElementById('namaSiswaDeteksi').className = "font-bold text-red-500 text-sm bg-red-50 p-2 rounded-lg flex-1 truncate border border-red-200";
-        window.tempCaptureData = null;
-        return;
-    }
-
-    document.getElementById('namaSiswaDeteksi').innerText = studentTarget.nama;
-    document.getElementById('namaSiswaDeteksi').className = "font-bold text-gray-800 text-sm bg-blue-50 p-2 rounded-lg flex-1 truncate border border-blue-100";
-
-    // Update info card
-    let infoCard = document.getElementById('infoSiswaCard');
-    if (infoCard) {
-        infoCard.classList.remove('hidden');
-        document.getElementById('infoNama').innerText = studentTarget.nama || '-';
-        document.getElementById('infoMapel').innerText = dataScan.topik || dataScan.mapel || '-';
-        document.getElementById('infoAbsen').innerText = absenTerdeteksi;
-    }
-
-    // 2. Hitung benar/salah dari window._omrJawaban
-    let kunci = dataScan.kunciPG || [];
-    let jawaban = window._omrJawaban || [];
-    let benar = 0, salah = 0;
-
-    for (let i = 0; i < dataScan.jmlPG; i++) {
-        let j = jawaban[i] || '-';
-        let k = kunci[i] || null;
-        if (k && j === k) benar++;
-        else if (j !== '-') salah++;
-    }
-
-    // 3. Rumus nilai skala 100
-    let skorMaksimal = dataScan.jmlPG * (dataScan.skorPG || 1);
-    let nilai = Math.round((benar * (dataScan.skorPG || 1) / skorMaksimal) * 100);
-
-    // 4. Tampilkan skor
-    document.getElementById('skorBenar').innerText = benar;
-    document.getElementById('skorSalah').innerText = salah;
-    document.getElementById('skorAkhir').innerText = nilai;
-
-    // 5. Re-render bubble grid agar warna benar/salah terupdate
-    let jumlahOpsi = dataScan.jumlahOpsi || 4;
-    document.getElementById('gridEditJawaban').innerHTML = renderBubbleGrid(jawaban, kunci, dataScan.jmlPG, jumlahOpsi);
-
-    // 6. Simpan sementara
-    window.tempCaptureData = {
-        studentId: studentTarget.id,
-        benar, salah, nilai,
-        jawaban: [...jawaban],
-        noAbsen: absenTerdeteksi
-    };
-};
-
-// -------------------------------------------------------------------------
-// TAHAP 3: SIMPAN KE DATABASE RIWAYAT
-// -------------------------------------------------------------------------
-window.simpanHasilCapture = function() {
-    if(!window.tempCaptureData) {
-        customAlert("Periksa kembali No. Absen Siswa!", "error");
-        return; 
-    }
-
-    let db = getDB('mc_ljk_scan');
-    let idx = db.findIndex(s => s.id === window.activeScanId);
-    
-    if(idx > -1) {
-        let data = db[idx];
-        if(!data.dataSiswa) data.dataSiswa = [];
-        
-        // Timpa nilai lama jika siswa yang sama discan ulang
-        let existing = data.dataSiswa.findIndex(ds => ds.studentId === window.tempCaptureData.studentId);
-        if(existing > -1) {
-            data.dataSiswa[existing] = window.tempCaptureData; 
-        } else {
-            data.dataSiswa.push(window.tempCaptureData);
-        }
-        
-        saveDB('mc_ljk_scan', db);
-        
-        // Tutup Pop-Up dan beri notifikasi mengambang (Toast)
-        document.getElementById('popupHasilScan').classList.add('hidden');
-        window.tempCaptureData = null;
-        
-        let toast = document.createElement('div');
-        toast.className = 'fixed top-10 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-full font-bold shadow-2xl z-[100] fade-in flex items-center';
-        toast.innerHTML = `<i class="fas fa-check-circle text-2xl mr-3 text-green-300"></i> Disimpan! Lanjut Kertas Berikutnya.`;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 2500);
-    }
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// =========================================================================
+// TAB 4: ANALISIS BUTIR SOAL
+// =========================================================================
 function renderTabAnalisisLJK() {
-    return `
-        <div class="bg-white p-8 rounded-xl shadow-sm border text-center">
+    const scans = getDB(LJK_STORE).filter(s => s.guruUsername === currentUserUsername);
+    if (!scans.length) return `
+        <div class="bg-white p-10 rounded-2xl shadow-sm border text-center">
             <i class="fas fa-microscope text-6xl text-rose-200 mb-4"></i>
-            <h3 class="text-xl font-bold text-gray-700">Analisis Butir Soal</h3>
-            <p class="text-gray-500 mt-2">Pilih data scan di tab Riwayat untuk melihat analisis tingkat kesukaran soal.</p>
+            <h3 class="text-lg font-bold text-gray-700">Analisis Butir Soal</h3>
+            <p class="text-gray-400 mt-2">Belum ada data scan. Scan dan simpan LJK siswa terlebih dahulu.</p>
+        </div>`;
+
+    const selectOpts = scans.map(s => `<option value="${s.id}">${s.topik} — ${s.mapel}</option>`).join('');
+    return `
+        <div class="bg-white rounded-2xl shadow-sm border p-5 space-y-4">
+            <h3 class="font-bold text-gray-800 text-sm border-b pb-2"><i class="fas fa-microscope text-rose-500 mr-2"></i>Analisis Butir Soal</h3>
+            <div class="flex gap-3 items-end">
+                <div class="flex-1">
+                    <label class="text-xs font-bold text-gray-500 block mb-1">Pilih Topik Ujian</label>
+                    <select id="analisisTopikSel" class="border-2 border-gray-200 p-2 rounded-lg w-full text-sm font-bold outline-none focus:border-rose-400">${selectOpts}</select>
+                </div>
+                <button onclick="ljkRunAnalisis()" class="bg-rose-600 hover:bg-rose-700 text-white font-bold px-5 py-2 rounded-xl text-sm shadow transition">Analisis</button>
+            </div>
+            <div id="analisisResult"></div>
         </div>`;
 }
 
+window.ljkRunAnalisis = function() {
+    const id = parseInt((document.getElementById('analisisTopikSel')||{}).value);
+    const data = getDB(LJK_STORE).find(s => s.id === id);
+    if (!data || !(data.dataSiswa||[]).length) {
+        document.getElementById('analisisResult').innerHTML = '<p class="text-gray-400 text-sm italic">Belum ada data siswa yang terscan untuk topik ini.</p>';
+        return;
+    }
+    const jmlPG = data.jmlPG;
+    const kunci = data.kunciPG || [];
+    // Hitung per soal: % benar, % salah, opsi terbanyak dipilih
+    const soalStats = Array.from({length: jmlPG}, (_, i) => {
+        const total = data.dataSiswa.length;
+        const benar = data.dataSiswa.filter(d => (d.jawaban||[])[i] === kunci[i]).length;
+        const pctBenar = total ? Math.round(benar/total*100) : 0;
+        let kategori = pctBenar >= 70 ? 'Mudah' : pctBenar >= 40 ? 'Sedang' : 'Sukar';
+        let warna = pctBenar >= 70 ? 'text-green-600 bg-green-50' : pctBenar >= 40 ? 'text-yellow-600 bg-yellow-50' : 'text-red-600 bg-red-50';
+        return { no: i+1, kunci: kunci[i]||'-', pctBenar, kategori, warna };
+    });
+    document.getElementById('analisisResult').innerHTML = `
+        <div class="overflow-x-auto border rounded-xl">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-100 text-gray-500 text-xs uppercase">
+                    <tr><th class="p-2 text-left">No</th><th class="p-2">Kunci</th><th class="p-2 text-right">% Benar</th><th class="p-2">Bar</th><th class="p-2">Kategori</th></tr>
+                </thead>
+                <tbody>
+                    ${soalStats.map(s => `<tr class="border-b hover:bg-gray-50">
+                        <td class="p-2 font-mono text-gray-500">${s.no}</td>
+                        <td class="p-2 text-center font-bold">${s.kunci}</td>
+                        <td class="p-2 text-right font-bold">${s.pctBenar}%</td>
+                        <td class="p-2 w-32">
+                            <div class="bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full ${s.pctBenar>=70?'bg-green-500':s.pctBenar>=40?'bg-yellow-400':'bg-red-500'}" style="width:${s.pctBenar}%"></div></div>
+                        </td>
+                        <td class="p-2"><span class="px-2 py-0.5 rounded-full text-xs font-bold ${s.warna}">${s.kategori}</span></td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>`;
+};
+
+// =========================================================================
+// KIRIM NILAI KE DATABASE PENILAIAN
+// =========================================================================
 window.kirimLJKKeNilai = async function(idScan) {
-    const scanData = getDB('mc_ljk_scan').find(s => s.id == idScan);
-    if(!scanData) return;
-
-    const isConfirm = await customConfirm(`Pindahkan nilai "${scanData.topik}" ke database Nilai Utama?`, "Konfirmasi Integrasi");
-    if(!isConfirm) return;
-
-    document.getElementById('loadingText').innerText = "Memindahkan data ke Database Nilai...";
+    const scanData = getDB(LJK_STORE).find(s => s.id == idScan);
+    if (!scanData) return;
+    const isConfirm = await customConfirm(`Pindahkan nilai "${scanData.topik}" ke database Nilai Utama?`, 'Konfirmasi Integrasi');
+    if (!isConfirm) return;
+    document.getElementById('loadingText').innerText = 'Memindahkan data ke Database Nilai...';
     document.getElementById('loadingOverlay').classList.remove('hidden');
-
     setTimeout(() => {
         let nilaiDB = getDB('mc_nilai');
-        
-        // Looping data siswa dari hasil scan
         scanData.dataSiswa.forEach(ds => {
             nilaiDB.push({
                 id: Date.now() + Math.random(),
@@ -3185,12 +3222,10 @@ window.kirimLJKKeNilai = async function(idScan) {
                 guruUsername: currentUserUsername
             });
         });
-        
         saveDB('mc_nilai', nilaiDB);
         syncToSheet('tambah_nilai_massal', scanData.dataSiswa);
-        
         document.getElementById('loadingOverlay').classList.add('hidden');
-        customAlert("Nilai berhasil terintegrasi! Silakan cek di menu 'Input Penilaian'.", "success");
+        customAlert("Nilai berhasil terintegrasi! Silakan cek di menu 'Input Penilaian'.", 'success');
     }, 1000);
 };
 
