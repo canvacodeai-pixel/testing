@@ -12,7 +12,14 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="window.onOpenCvReady();" type="text/javascript"></script>
+    <script>
+        window.isOpenCvReady = false;
+        window.onOpenCvReady = function() {
+            window.isOpenCvReady = true;
+            console.log("OpenCV.js Berhasil Dimuat dan Siap Digunakan!");
+        };
+    </script>
     <script>
         window.onerror = function(message, source, lineno, colno, error) {
             document.body.innerHTML = `
@@ -2498,28 +2505,27 @@ window.tempCaptureData = null; // Menyimpan data sementara sebelum di-klik "Simp
 // TAMPILAN KAMERA SCANNER (AKSES KAMERA ASLI & POPUP HASIL)
 // -------------------------------------------------------------------------
 window.bukaLJKKamera = function(id) {
+    if (!window.isOpenCvReady) {
+        customAlert("Sistem Scanner (OpenCV) sedang memuat data di latar belakang. Mohon tunggu beberapa detik lalu coba lagi.", "warning");
+        return;
+    }
+
     window.activeScanId = id;
     window.stateRiwayatScan = 'kamera';
     window.renderGuruLJK();
 
-    // Meminta akses kamera setelah UI dirender
     setTimeout(() => {
         const video = document.getElementById('videoLJK');
         if (!video) return;
 
         if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            // TAHAP 1: Coba minta akses kamera belakang (environment)
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
             .then(function(stream) {
                 window.kameraStream = stream;
                 video.srcObject = stream;
-                // Tidak perlu video.play() karena sudah ada atribut autoplay di HTML
                 document.getElementById('kameraLoading').classList.add('hidden');
             })
             .catch(function(err) {
-                console.warn("Gagal akses kamera belakang khusus, mencoba kamera umum...", err);
-                
-                // TAHAP 2 (FALLBACK): Jika HP menolak constraint kamera belakang, coba buka kamera apa saja (video: true)
                 navigator.mediaDevices.getUserMedia({ video: true })
                 .then(function(stream) {
                     window.kameraStream = stream;
@@ -2527,13 +2533,7 @@ window.bukaLJKKamera = function(id) {
                     document.getElementById('kameraLoading').classList.add('hidden');
                 })
                 .catch(function(fallbackErr) {
-                    // TAHAP 3: Jika masih gagal, beri pesan error yang jelas untuk user
-                    document.getElementById('kameraLoading').innerHTML = `
-                        <i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-2"></i><br>
-                        <span class="text-sm font-bold">Kamera Sedang Digunakan / Error</span><br>
-                        <span class="text-[10px] mt-2 block font-normal text-gray-400">Pastikan tidak ada aplikasi lain (seperti WhatsApp/Zoom) yang menahan kamera di latar belakang. Muat ulang halaman (Refresh) lalu coba lagi.</span>
-                    `;
-                    console.error("Kamera error fallback: ", fallbackErr);
+                    document.getElementById('kameraLoading').innerHTML = `<i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-2"></i><br><span class="text-sm font-bold">Kamera Sedang Digunakan / Error</span>`;
                 });
             });
         } else {
@@ -2657,11 +2657,13 @@ function renderLJKKamera() {
 // -------------------------------------------------------------------------
 // LOGIKA CAPTURE GAMBAR & PENILAIAN (SIMULASI OMR SEMENTARA)
 // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// LOGIKA OMR TAHAP 1: OPENCV IMAGE PROCESSING (BINARIZATION)
+// -------------------------------------------------------------------------
 window.captureDanEvaluasiLJK = function() {
     const video = document.getElementById('videoLJK');
     const canvas = document.getElementById('canvasHasil');
-    const ctx = canvas.getContext('2d');
-    const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const students = getMyStudents();
 
     if(!video.videoWidth || students.length === 0) {
@@ -2669,56 +2671,54 @@ window.captureDanEvaluasiLJK = function() {
         return;
     }
 
-    // 1. Ambil Snapshot dari Video ke Canvas
+    // 1. Ambil Snapshot dari Video ke Canvas sesuai resolusi aslinya
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // 2. SIMULASI OMR: Tarik satu siswa acak, dan generate nilai acak
-    let randStu = students[Math.floor(Math.random() * students.length)];
-    let benar = Math.floor(Math.random() * (dataScan.jmlPG + 1)); 
-    let salah = dataScan.jmlPG - benar;
-    let skorDiperoleh = benar * dataScan.skorPG;
-    let skorMaksimal = dataScan.jmlPG * dataScan.skorPG;
-    let nilai = Math.round((skorDiperoleh / skorMaksimal) * 100);
+    // ==============================================================
+    // OPENCV MULAI BEKERJA DI SINI
+    // ==============================================================
+    try {
+        // 2. Baca gambar dari Canvas ke dalam format Matrix OpenCV (cv.Mat)
+        let src = cv.imread(canvas);
+        let dst = new cv.Mat();
+        let gray = new cv.Mat();
 
-    // 3. GAMBAR OVERLAY VISUAL (Titik Hijau & Merah)
-    // Catatan: Karena kita belum pakai OpenCV untuk mendeteksi koordinat asli, 
-    // kita gambar titik secara acak di area tengah kanvas untuk efek visualisasi.
-    for(let i = 0; i < dataScan.jmlPG; i++) {
-        let isCorrect = Math.random() > 0.3; // 70% chance hijau
-        let x = canvas.width * 0.2 + (Math.random() * canvas.width * 0.6); // Random di area tengah
-        let y = canvas.height * 0.2 + (Math.random() * canvas.height * 0.6);
+        // 3. Konversi gambar berwarna menjadi Grayscale (Abu-abu)
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // 4. Lakukan efek "Blur" ringan untuk membersihkan bintik/noise kamera (Gaussian Blur)
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(gray, gray, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+        // 5. Adaptive Thresholding (PENGHITAM-PUTIHAN)
+        // Mesin OpenCV mengubah area gelap (tinta) jadi warna Putih(255), dan area terang (kertas) jadi Hitam(0)
+        cv.adaptiveThreshold(gray, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 4);
+
+        // 6. Tampilkan Hasil Pemrosesan Mesin ke Pop-Up layar (Canvas)
+        cv.imshow('canvasHasil', dst);
+
+        // 7. Wajib membersihkan memori HP dari Matrix OpenCV agar tidak lemot
+        src.delete(); dst.delete(); gray.delete();
+
+        // -----------------------------------------------------------
+        // SIMULASI DATA POP-UP SEMENTARA
+        // -----------------------------------------------------------
+        let randStu = students[Math.floor(Math.random() * students.length)];
+        document.getElementById('namaSiswaScan').innerText = randStu.nama;
+        document.getElementById('skorBenar').innerText = "?";
+        document.getElementById('skorSalah').innerText = "?";
+        document.getElementById('skorAkhir').innerText = "Sedang Dites...";
         
-        ctx.beginPath();
-        ctx.arc(x, y, 15, 0, 2 * Math.PI);
-        ctx.fillStyle = isCorrect ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)'; // Green or Red
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = 'white';
-        ctx.stroke();
+        // Memunculkan Pop-Up
+        document.getElementById('popupHasilScan').classList.remove('hidden');
+
+    } catch (err) {
+        console.error("OpenCV Error: ", err);
+        customAlert("Terjadi kesalahan saat memproses gambar dengan OpenCV.", "error");
     }
-
-    // 4. Tampilkan Data di UI Pop-Up
-    document.getElementById('namaSiswaScan').innerText = randStu.nama;
-    document.getElementById('skorBenar').innerText = benar;
-    document.getElementById('skorSalah').innerText = salah;
-    document.getElementById('skorAkhir').innerText = nilai;
-
-    // Simpan data sementara ke variabel global jika guru klik "Simpan Nilai"
-    window.tempCaptureData = {
-        studentId: randStu.id,
-        benar: benar,
-        salah: salah,
-        nilai: nilai
-    };
-
-    // 5. Munculkan Pop-Up
-    document.getElementById('popupHasilScan').classList.remove('hidden');
 };
-
-// -------------------------------------------------------------------------
-// SIMPAN HASIL DARI POPUP KE DATABASE LJK
 // -------------------------------------------------------------------------
 window.simpanHasilCapture = function() {
     if(!window.tempCaptureData) return;
