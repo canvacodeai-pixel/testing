@@ -2505,21 +2505,39 @@ window.bukaLJKKamera = function(id) {
     // Meminta akses kamera setelah UI dirender
     setTimeout(() => {
         const video = document.getElementById('videoLJK');
+        if (!video) return;
+
         if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            // Memprioritaskan kamera belakang (environment) untuk HP
+            // TAHAP 1: Coba minta akses kamera belakang (environment)
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
             .then(function(stream) {
                 window.kameraStream = stream;
                 video.srcObject = stream;
-                video.play();
+                // Tidak perlu video.play() karena sudah ada atribut autoplay di HTML
                 document.getElementById('kameraLoading').classList.add('hidden');
             })
             .catch(function(err) {
-                document.getElementById('kameraLoading').innerHTML = `<i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-2"></i><br>Akses Kamera Ditolak / Tidak Ditemukan.`;
-                console.error("Kamera error: ", err);
+                console.warn("Gagal akses kamera belakang khusus, mencoba kamera umum...", err);
+                
+                // TAHAP 2 (FALLBACK): Jika HP menolak constraint kamera belakang, coba buka kamera apa saja (video: true)
+                navigator.mediaDevices.getUserMedia({ video: true })
+                .then(function(stream) {
+                    window.kameraStream = stream;
+                    video.srcObject = stream;
+                    document.getElementById('kameraLoading').classList.add('hidden');
+                })
+                .catch(function(fallbackErr) {
+                    // TAHAP 3: Jika masih gagal, beri pesan error yang jelas untuk user
+                    document.getElementById('kameraLoading').innerHTML = `
+                        <i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-2"></i><br>
+                        <span class="text-sm font-bold">Kamera Sedang Digunakan / Error</span><br>
+                        <span class="text-[10px] mt-2 block font-normal text-gray-400">Pastikan tidak ada aplikasi lain (seperti WhatsApp/Zoom) yang menahan kamera di latar belakang. Muat ulang halaman (Refresh) lalu coba lagi.</span>
+                    `;
+                    console.error("Kamera error fallback: ", fallbackErr);
+                });
             });
         } else {
-            document.getElementById('kameraLoading').innerHTML = "Browser Anda tidak mendukung akses kamera.";
+            document.getElementById('kameraLoading').innerHTML = "Browser Anda tidak mendukung akses API Kamera.";
         }
     }, 500);
 };
@@ -2552,7 +2570,7 @@ function renderLJKKamera() {
                     <p class="text-gray-400 font-bold tracking-widest uppercase">Memuat Kamera...</p>
                 </div>
 
-                <video id="videoLJK" class="w-full h-full object-cover relative z-0" playsinline></video>
+                <video id="videoLJK" class="w-full h-full object-cover relative z-0" autoplay muted playsinline></video>
                 
                 <div class="absolute inset-4 md:inset-10 border-2 border-dashed border-white/40 rounded-lg pointer-events-none z-10">
                     <div class="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-green-400 rounded-tl-lg shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
