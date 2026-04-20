@@ -2346,6 +2346,7 @@ function renderLJKList() {
                 <div><label class="text-xs font-bold text-rose-800 block mb-1">Jumlah PG</label><input type="number" id="sJmlPG" value="20" min="1" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
                 <div><label class="text-xs font-bold text-rose-800 block mb-1">Jml Uraian</label><input type="number" id="sJmlEssay" value="5" min="0" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
                 <div><label class="text-xs font-bold text-rose-800 block mb-1">Skor per Soal (PG)</label><input type="number" id="sSkorPG" value="1" min="1" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 text-center font-bold"></div>
+                <div><label class="text-xs font-bold text-rose-800 block mb-1">Jumlah Opsi (A–D/E)</label><select id="sJmlOpsi" class="border-2 border-rose-100 p-2.5 rounded-lg w-full outline-none focus:border-rose-400 font-bold bg-white"><option value="4">4 Opsi (A–D)</option><option value="5">5 Opsi (A–E)</option><option value="3">3 Opsi (A–C)</option></select></div>
                 <div class="md:col-span-2 mt-auto">
                     <button onclick="window.bukaPopupKunciLJK()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-lg shadow-md transition"><i class="fas fa-key mr-2"></i> Input Kunci Jawaban</button>
                 </div>
@@ -2379,6 +2380,7 @@ window.bukaPopupKunciLJK = function() {
     let jmlPG = parseInt(document.getElementById('sJmlPG').value) || 0;
     let jmlEssay = parseInt(document.getElementById('sJmlEssay').value) || 0;
     let skorPG = parseFloat(document.getElementById('sSkorPG').value) || 1;
+    let jmlOpsi = parseInt(document.getElementById('sJmlOpsi') ? document.getElementById('sJmlOpsi').value : 4) || 4;
 
     if(!topik || !mapel || jmlPG <= 0) { customAlert("Topik, Mapel, dan Jumlah PG wajib diisi dengan benar!", "warning"); return; }
 
@@ -2397,11 +2399,12 @@ window.bukaPopupKunciLJK = function() {
 
     document.getElementById('modalKurikulumTitle').innerHTML = '<i class="fas fa-key text-rose-600 mr-2"></i> Set Kunci Jawaban LJK';
     document.getElementById('modalKurikulumBody').innerHTML = html;
-    document.getElementById('btnSimpanModalKurikulum').onclick = () => window.simpanTopikLJK(topik, mapel, jmlPG, jmlEssay, skorPG);
+    document.getElementById('btnSimpanModalKurikulum').onclick = () => window.simpanTopikLJK(topik, mapel, jmlPG, jmlEssay, skorPG, jmlOpsi);
     document.getElementById('modalInputKurikulum').classList.remove('hidden');
 };
 
-window.simpanTopikLJK = function(topik, mapel, jmlPG, jmlEssay, skorPG) {
+window.simpanTopikLJK = function(topik, mapel, jmlPG, jmlEssay, skorPG, jmlOpsi) {
+    jmlOpsi = jmlOpsi || 4;
     let kunci = [];
     for(let i=1; i<=jmlPG; i++) { kunci.push(document.getElementById('kunci_'+i).value); }
     
@@ -2415,6 +2418,7 @@ window.simpanTopikLJK = function(topik, mapel, jmlPG, jmlEssay, skorPG) {
         jmlEssay: jmlEssay,
         skorPG: skorPG,
         kunciPG: kunci,
+        jumlahOpsi: jmlOpsi,
         tanggal: new Date().toISOString(),
         dataSiswa: [] 
     };
@@ -2542,6 +2546,62 @@ window.bukaLJKKamera = function(id) {
     }, 500);
 };
 
+window.uploadGambarlLJK = function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const canvas = document.getElementById('canvasHasil');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const reader = new FileReader();
+
+    reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+            // Resize agar proses OpenCV tidak terlalu berat
+            let maxW = 1200, maxH = 1600;
+            let w = img.width, h = img.height;
+            if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+            if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
+
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(img, 0, 0, w, h);
+
+            // Jalankan OMR dari gambar galeri
+            const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
+            let kunci = dataScan.kunciPG || [];
+            let jumlahOpsi = dataScan.jumlahOpsi || 4;
+
+            let omrHasil = deteksiBubbleOMR(canvas, dataScan.jmlPG, jumlahOpsi);
+            let noAbsenDeteksi = omrHasil.noAbsen !== null ? omrHasil.noAbsen : 1;
+            document.getElementById('editAbsen').value = noAbsenDeteksi;
+
+            let htmlGrid = '';
+            let opsiLabels = ['A', 'B', 'C', 'D', 'E'].slice(0, jumlahOpsi);
+            for (let i = 0; i < dataScan.jmlPG; i++) {
+                let jawabanTerbaca = omrHasil.jawaban[i] || '-';
+                let opsiHtml = opsiLabels.map(o =>
+                    `<option value="${o}" ${jawabanTerbaca === o ? 'selected' : ''}>${o}</option>`
+                ).join('');
+                opsiHtml += `<option value="-" ${jawabanTerbaca === '-' ? 'selected' : ''}>- (Kosong)</option>`;
+                htmlGrid += `
+                    <div class="flex items-center text-xs border rounded bg-white overflow-hidden shadow-sm">
+                        <span class="bg-gray-100 font-bold px-2 py-1 border-r w-8 text-center">${i + 1}.</span>
+                        <select id="editJawaban_${i}" class="w-full text-center font-bold p-1 outline-none text-blue-700 bg-transparent" onchange="window.kalkulasiUlangNilai()">
+                            ${opsiHtml}
+                        </select>
+                        <span class="text-[9px] text-gray-400 font-bold px-1 bg-gray-50 border-l" title="Kunci Jawaban">K: ${kunci[i] || '-'}</span>
+                    </div>`;
+            }
+            document.getElementById('gridEditJawaban').innerHTML = htmlGrid;
+            document.getElementById('popupHasilScan').classList.remove('hidden');
+            window.kalkulasiUlangNilai();
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+};
+
 window.tutupKameraLJK = function() {
     if(window.kameraStream) {
         window.kameraStream.getTracks().forEach(track => track.stop());
@@ -2566,10 +2626,26 @@ function renderLJKKamera() {
             <div class="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
                 <div id="kameraLoading" class="absolute inset-0 flex flex-col items-center justify-center z-10"><i class="fas fa-spinner fa-spin text-5xl text-gray-400 mb-4"></i></div>
                 <video id="videoLJK" class="w-full h-full object-cover relative z-0" autoplay muted playsinline></video>
-                
-                <div class="absolute bottom-6 w-full flex justify-center z-20">
-                    <button onclick="window.captureDanEvaluasiLJK()" class="bg-green-600 hover:bg-green-700 text-white px-6 py-4 rounded-full border-4 border-white/50 shadow-[0_0_20px_rgba(34,197,94,0.8)] flex items-center justify-center transition transform hover:scale-105 font-bold text-lg">
-                        <i class="fas fa-camera mr-2"></i> Scan & Evaluasi
+
+                <!-- Panduan posisi LJK (overlay grid) -->
+                <div class="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
+                    <div style="width:85%; height:88%; border: 3px solid rgba(74,222,128,0.85); border-radius:8px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);">
+                        <div class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-green-400 rounded-tl-md"></div>
+                        <div class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-green-400 rounded-tr-md"></div>
+                        <div class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-green-400 rounded-bl-md"></div>
+                        <div class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-green-400 rounded-br-md"></div>
+                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-green-300 text-xs font-bold opacity-60 tracking-widest">PASKAN LJK DI SINI</div>
+                    </div>
+                </div>
+
+                <div class="absolute bottom-4 w-full flex justify-center items-center gap-4 z-20">
+                    <!-- Upload dari galeri sebagai alternatif -->
+                    <label class="bg-gray-700/80 hover:bg-gray-600 text-white px-4 py-3 rounded-full border-2 border-white/30 flex items-center cursor-pointer transition font-bold text-sm" title="Upload dari Galeri">
+                        <i class="fas fa-image mr-2"></i> Galeri
+                        <input type="file" accept="image/*" class="hidden" onchange="window.uploadGambarlLJK(event)">
+                    </label>
+                    <button onclick="window.captureDanEvaluasiLJK()" class="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-full border-4 border-white/50 shadow-[0_0_20px_rgba(34,197,94,0.8)] flex items-center justify-center transition transform hover:scale-105 font-bold text-lg">
+                        <i class="fas fa-camera mr-2"></i> Scan
                     </button>
                 </div>
             </div>
@@ -2584,12 +2660,21 @@ function renderLJKKamera() {
                     <div class="p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col md:flex-row gap-4 bg-gray-50">
                         <div class="w-full md:w-1/2 flex flex-col items-center">
                             <div class="relative w-full rounded-lg overflow-hidden border-2 border-gray-300 bg-gray-200">
-                                <canvas id="canvasHasil" class="w-full h-auto object-contain max-h-[30vh] md:max-h-[50vh]"></canvas>
+                                <canvas id="canvasHasil" class="w-full h-auto object-contain max-h-[30vh] md:max-h-[40vh]"></canvas>
+                            </div>
+                            <!-- Info Siswa Card (seperti gambar 2) -->
+                            <div id="infoSiswaCard" class="w-full mt-3 bg-white border rounded-xl shadow-sm p-3 text-sm hidden">
+                                <table class="w-full text-left">
+                                    <tr><td class="text-gray-500 w-24 py-0.5">Nama</td><td class="font-semibold" id="infoNama">-</td></tr>
+                                    <tr><td class="text-gray-500 py-0.5">Kelas</td><td class="font-semibold" id="infoKelas">-</td></tr>
+                                    <tr><td class="text-gray-500 py-0.5">Ujian</td><td class="font-semibold" id="infoMapel">-</td></tr>
+                                    <tr><td class="text-gray-500 py-0.5">No. Absen</td><td class="font-semibold" id="infoAbsen">-</td></tr>
+                                </table>
                             </div>
                             <div class="grid grid-cols-3 gap-2 w-full mt-3 text-center">
                                 <div class="bg-green-100 p-2 rounded-lg border border-green-200"><p class="text-[10px] text-green-700 font-bold">BENAR</p><p id="skorBenar" class="font-bold text-lg text-green-800">0</p></div>
                                 <div class="bg-red-100 p-2 rounded-lg border border-red-200"><p class="text-[10px] text-red-700 font-bold">SALAH</p><p id="skorSalah" class="font-bold text-lg text-red-800">0</p></div>
-                                <div class="bg-blue-600 p-2 rounded-lg shadow-inner text-white"><p class="text-[10px] text-blue-200 font-bold">NILAI</p><p id="skorAkhir" class="font-extrabold text-xl">0</p></div>
+                                <div class="bg-blue-600 p-2 rounded-lg shadow-inner text-white"><p class="text-[10px] text-blue-200 font-bold">NILAI AKHIR</p><p id="skorAkhir" class="font-extrabold text-xl">0</p></div>
                             </div>
                         </div>
 
@@ -2597,16 +2682,16 @@ function renderLJKKamera() {
                             <label class="text-xs font-bold text-gray-500 uppercase">1. No Absen Siswa</label>
                             <div class="flex items-center space-x-2 mt-1 mb-2">
                                 <input type="number" id="editAbsen" class="border-2 border-blue-200 p-2 w-20 text-center rounded-lg font-bold text-blue-700 outline-none" min="1" onchange="window.kalkulasiUlangNilai()">
-                                <div id="namaSiswaDeteksi" class="font-bold text-gray-800 text-sm bg-gray-100 p-2 rounded-lg flex-1 truncate">Nama Siswa...</div>
+                                <div id="namaSiswaDeteksi" class="font-bold text-gray-800 text-sm bg-blue-50 p-2 rounded-lg flex-1 truncate border border-blue-100">Mendeteksi...</div>
                             </div>
                             
                             <hr class="my-3">
                             
                             <label class="text-xs font-bold text-gray-500 uppercase flex justify-between">
-                                <span>2. Koreksi Jawaban</span>
-                                <span class="text-blue-500"><i class="fas fa-info-circle"></i> Kunci Jawaban</span>
+                                <span>2. Koreksi Jawaban <span class="text-blue-600 font-normal normal-case">(edit jika salah baca)</span></span>
+                                <span class="text-rose-500 text-[10px]">K = Kunci</span>
                             </label>
-                            <div id="gridEditJawaban" class="grid grid-cols-2 gap-2 mt-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                            <div id="gridEditJawaban" class="grid grid-cols-2 gap-2 mt-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
                             </div>
                         </div>
                     </div>
@@ -2624,60 +2709,258 @@ function renderLJKKamera() {
 }
 
 // -------------------------------------------------------------------------
-// TAHAP 1: PEMROSESAN GAMBAR (OPENCV) & PERSIAPAN FORM KOREKSI
+// TAHAP 1: PEMROSESAN GAMBAR (OPENCV) & DETEKSI BUBBLE OMR SUNGGUHAN
 // -------------------------------------------------------------------------
+
+/**
+ * Fungsi utama OMR: deteksi bubble yang diisi menggunakan OpenCV.
+ * Mengembalikan array jawaban ['A','B','C','D','-'] per soal.
+ * Juga mengembalikan noAbsen yang terdeteksi dari bubble nomor absen.
+ */
+function deteksiBubbleOMR(srcCanvas, jmlPG, jumlahOpsi) {
+    let hasil = { jawaban: [], noAbsen: null };
+    if (!window.isOpenCvReady) return hasil;
+
+    try {
+        let src = cv.imread(srcCanvas);
+        let gray = new cv.Mat();
+        let blur = new cv.Mat();
+        let thresh = new cv.Mat();
+        let warped = new cv.Mat();
+
+        // 1. Grayscale
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // 2. Blur ringan untuk noise reduction
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(gray, blur, ksize, 0);
+
+        // 3. Threshold Otsu - lebih akurat dari adaptive untuk lembar ujian
+        cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+        // 4. Cari kontur terbesar (bingkai LJK)
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        let bestContour = null;
+        let maxArea = 0;
+        for (let i = 0; i < contours.size(); i++) {
+            let c = contours.get(i);
+            let area = cv.contourArea(c);
+            if (area > maxArea) { maxArea = area; bestContour = c; }
+        }
+
+        // 5. Perspective Transform (Warp) - meluruskan LJK jika miring
+        let W = srcCanvas.width, H = srcCanvas.height;
+        if (bestContour && maxArea > (W * H * 0.05)) {
+            let peri = cv.arcLength(bestContour, true);
+            let approx = new cv.Mat();
+            cv.approxPolyDP(bestContour, approx, 0.02 * peri, true);
+
+            if (approx.rows === 4) {
+                // Urutkan titik sudut: TL, TR, BR, BL
+                let pts = [];
+                for (let i = 0; i < 4; i++) {
+                    pts.push({ x: approx.data32S[i * 2], y: approx.data32S[i * 2 + 1] });
+                }
+                pts.sort((a, b) => (a.x + a.y) - (b.x + b.y));
+                let tl = pts[0];
+                pts.sort((a, b) => (b.x - b.y) - (a.x - a.y));
+                let tr = pts[0];
+                pts.sort((a, b) => (b.x + b.y) - (a.x + a.y));
+                let br = pts[0];
+                pts.sort((a, b) => (a.x - a.y) - (b.x - b.y));
+                let bl = pts[0];
+
+                let srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
+                let dstW = 600, dstH = 800;
+                let dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, dstW, 0, dstW, dstH, 0, dstH]);
+                let M = cv.getPerspectiveTransform(srcPts, dstPts);
+                let dsize = new cv.Size(dstW, dstH);
+                cv.warpPerspective(thresh, warped, M, dsize);
+                srcPts.delete(); dstPts.delete(); M.delete();
+            } else {
+                thresh.copyTo(warped);
+            }
+            approx.delete();
+        } else {
+            thresh.copyTo(warped);
+        }
+
+        // 6. Tampilkan hasil gambar yang sudah di-warp (tampilan bersih)
+        let displayMat = new cv.Mat();
+        cv.bitwise_not(warped, displayMat);
+        cv.cvtColor(displayMat, displayMat, cv.COLOR_GRAY2RGBA);
+        cv.imshow('canvasHasil', displayMat);
+        displayMat.delete();
+
+        // 7. DETEKSI BUBBLE PILIHAN GANDA
+        // Estimasi area grid PG berdasarkan layout LJK standar (2 kolom)
+        let wW = warped.cols, wH = warped.rows;
+        let opsiLabels = ['A', 'B', 'C', 'D', 'E'].slice(0, jumlahOpsi);
+        let soalPerKolom = Math.ceil(jmlPG / 2);
+
+        // Layout grid PG: mulai ~35% dari atas, setiap kolom ~48% lebar
+        // Setiap baris tinggi ~(60% tinggi / soalPerKolom)
+        let pgTopRatio = 0.28;
+        let pgBotRatio = 0.92;
+        let pgAreaH = wH * (pgBotRatio - pgTopRatio);
+        let rowH = pgAreaH / soalPerKolom;
+
+        // Untuk setiap kolom (0=kiri, 1=kanan)
+        let colOffsets = [0.02, 0.51]; // x start setiap kolom (rasio)
+        let colWidth = 0.47;           // lebar kolom (rasio)
+        let noColW = 0.12;             // lebar kolom "No" (rasio dari colWidth)
+
+        for (let col = 0; col < 2; col++) {
+            let startNo = col * soalPerKolom;
+            let endNo = Math.min(startNo + soalPerKolom, jmlPG);
+            let colX = wW * colOffsets[col];
+            let cellW = (wW * colWidth - wW * noColW) / jumlahOpsi;
+
+            for (let r = 0; r < (endNo - startNo); r++) {
+                let soalIdx = startNo + r;
+                let cellY = wH * pgTopRatio + r * rowH;
+                let maxFill = -1;
+                let pilihanTerpilih = '-';
+
+                for (let o = 0; o < jumlahOpsi; o++) {
+                    let bx = Math.round(colX + wW * noColW + o * cellW + cellW * 0.1);
+                    let by = Math.round(cellY + rowH * 0.15);
+                    let bw = Math.round(cellW * 0.8);
+                    let bh = Math.round(rowH * 0.7);
+
+                    // Clamp agar tidak keluar batas
+                    bx = Math.max(0, Math.min(bx, wW - 2));
+                    by = Math.max(0, Math.min(by, wH - 2));
+                    bw = Math.max(1, Math.min(bw, wW - bx));
+                    bh = Math.max(1, Math.min(bh, wH - by));
+
+                    let roi = warped.roi(new cv.Rect(bx, by, bw, bh));
+                    let total = cv.countNonZero(roi);
+                    let ratio = total / (bw * bh);
+                    roi.delete();
+
+                    if (ratio > maxFill) {
+                        maxFill = ratio;
+                        pilihanTerpilih = opsiLabels[o];
+                    }
+                }
+
+                // Threshold: bubble dianggap "diisi" jika fill > 15%
+                hasil.jawaban[soalIdx] = (maxFill > 0.15) ? pilihanTerpilih : '-';
+            }
+        }
+
+        // 8. DETEKSI NOMOR ABSEN dari bubble digit (2 baris x 10 kolom)
+        // Area absen ada di kanan atas, ~5%-20% dari atas, ~55%-95% dari kiri
+        let absenTop = wH * 0.05;
+        let absenH = wH * 0.15;
+        let absenLeft = wW * 0.55;
+        let absenRight = wW * 0.95;
+        let absenW = absenRight - absenLeft;
+        let digitW = absenW / 10; // 10 digit (0-9)
+        let digitRowH = absenH / 2;
+
+        let absenDigits = [null, null]; // 2 digit (puluhan, satuan)
+        for (let row = 0; row < 2; row++) {
+            let maxFillA = -1;
+            let digitTerpilih = null;
+            for (let d = 0; d < 10; d++) {
+                let bx = Math.round(absenLeft + d * digitW + digitW * 0.1);
+                let by = Math.round(absenTop + row * digitRowH + digitRowH * 0.15);
+                let bw = Math.round(digitW * 0.8);
+                let bh = Math.round(digitRowH * 0.7);
+
+                bx = Math.max(0, Math.min(bx, wW - 2));
+                by = Math.max(0, Math.min(by, wH - 2));
+                bw = Math.max(1, Math.min(bw, wW - bx));
+                bh = Math.max(1, Math.min(bh, wH - by));
+
+                let roi = warped.roi(new cv.Rect(bx, by, bw, bh));
+                let total = cv.countNonZero(roi);
+                let ratio = total / (bw * bh);
+                roi.delete();
+
+                if (ratio > maxFillA && ratio > 0.15) {
+                    maxFillA = ratio;
+                    digitTerpilih = d;
+                }
+            }
+            absenDigits[row] = digitTerpilih;
+        }
+
+        // Gabungkan 2 digit menjadi nomor absen
+        if (absenDigits[0] !== null && absenDigits[1] !== null) {
+            hasil.noAbsen = absenDigits[0] * 10 + absenDigits[1];
+        } else if (absenDigits[1] !== null) {
+            hasil.noAbsen = absenDigits[1];
+        } else if (absenDigits[0] !== null) {
+            hasil.noAbsen = absenDigits[0];
+        }
+
+        // Cleanup memory OpenCV
+        src.delete(); gray.delete(); blur.delete(); thresh.delete(); warped.delete();
+        contours.delete(); hierarchy.delete();
+
+    } catch (err) {
+        console.error("OMR Error:", err);
+    }
+
+    return hasil;
+}
+
 window.captureDanEvaluasiLJK = function() {
     const video = document.getElementById('videoLJK');
     const canvas = document.getElementById('canvasHasil');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    
-    if(!video.videoWidth) { customAlert("Kamera belum siap.", "warning"); return; }
 
-    // 1. Ambil Gambar
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    if (!video.videoWidth) { customAlert("Kamera belum siap.", "warning"); return; }
+
+    // 1. Ambil frame dari kamera
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    try {
-        // 2. OpenCV: Efek Scanner Hitam Putih agar garis LJK jelas terlihat
-        let src = cv.imread(canvas);
-        let gray = new cv.Mat();
-        let dst = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-        cv.adaptiveThreshold(gray, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 4);
-        cv.imshow('canvasHasil', dst);
-        src.delete(); gray.delete(); dst.delete();
-    } catch(err) { console.log("Bypass OpenCV Filter"); }
-
-    // 3. Persiapkan Form Edit Jawaban berdasarkan Kunci Jawaban di Database
+    // 2. Ambil data LJK (jumlah soal & opsi)
     const dataScan = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
-    let htmlGrid = '';
     let kunci = dataScan.kunciPG || [];
-    
-    // (Simulasi) Kita asumsikan OMR membaca beberapa jawaban secara acak/seadanya
-    // Nantinya guru tinggal mencocokkan mana yang salah baca.
-    for(let i = 0; i < dataScan.jmlPG; i++) {
-        let jawabanTerbaca = ['A','B','C','D','E'][Math.floor(Math.random() * 4)]; 
+    let jumlahOpsi = dataScan.jumlahOpsi || 4;
+
+    // 3. Jalankan deteksi bubble OMR sungguhan
+    let omrHasil = deteksiBubbleOMR(canvas, dataScan.jmlPG, jumlahOpsi);
+
+    // 4. Set No. Absen dari deteksi (atau default 1 jika gagal terbaca)
+    let noAbsenDeteksi = omrHasil.noAbsen !== null ? omrHasil.noAbsen : 1;
+    document.getElementById('editAbsen').value = noAbsenDeteksi;
+
+    // 5. Bangun grid edit jawaban dengan hasil deteksi bubble nyata
+    let htmlGrid = '';
+    let opsiLabels = ['A', 'B', 'C', 'D', 'E'].slice(0, jumlahOpsi);
+
+    for (let i = 0; i < dataScan.jmlPG; i++) {
+        let jawabanTerbaca = omrHasil.jawaban[i] || '-';
+        let opsiHtml = opsiLabels.map(o =>
+            `<option value="${o}" ${jawabanTerbaca === o ? 'selected' : ''}>${o}</option>`
+        ).join('');
+        opsiHtml += `<option value="-" ${jawabanTerbaca === '-' ? 'selected' : ''}>- (Kosong)</option>`;
+
         htmlGrid += `
             <div class="flex items-center text-xs border rounded bg-white overflow-hidden shadow-sm">
-                <span class="bg-gray-100 font-bold px-2 py-1 border-r w-8 text-center">${i+1}.</span>
+                <span class="bg-gray-100 font-bold px-2 py-1 border-r w-8 text-center">${i + 1}.</span>
                 <select id="editJawaban_${i}" class="w-full text-center font-bold p-1 outline-none text-blue-700 bg-transparent" onchange="window.kalkulasiUlangNilai()">
-                    <option value="A" ${jawabanTerbaca=='A'?'selected':''}>A</option>
-                    <option value="B" ${jawabanTerbaca=='B'?'selected':''}>B</option>
-                    <option value="C" ${jawabanTerbaca=='C'?'selected':''}>C</option>
-                    <option value="D" ${jawabanTerbaca=='D'?'selected':''}>D</option>
-                    <option value="E" ${jawabanTerbaca=='E'?'selected':''}>E</option>
-                    <option value="-">- (Kosong)</option>
+                    ${opsiHtml}
                 </select>
-                <span class="text-[9px] text-gray-400 font-bold px-1 bg-gray-50 border-l" title="Kunci Jawaban">K: ${kunci[i]||'-'}</span>
+                <span class="text-[9px] text-gray-400 font-bold px-1 bg-gray-50 border-l" title="Kunci Jawaban">K: ${kunci[i] || '-'}</span>
             </div>
         `;
     }
     document.getElementById('gridEditJawaban').innerHTML = htmlGrid;
 
-    // Set default Absen ke 1 dan panggil fungsi kalkulasi untuk memuat nama & nilai awal
-    document.getElementById('editAbsen').value = 1;
+    // 6. Tampilkan popup dan hitung nilai
     document.getElementById('popupHasilScan').classList.remove('hidden');
-    window.kalkulasiUlangNilai(); // Hitung nilai secara real-time
+    window.kalkulasiUlangNilai();
 };
 
 // -------------------------------------------------------------------------
@@ -2700,6 +2983,16 @@ window.kalkulasiUlangNilai = function() {
     
     document.getElementById('namaSiswaDeteksi').innerText = studentTarget.nama;
     document.getElementById('namaSiswaDeteksi').classList.replace('text-red-500', 'text-gray-800');
+
+    // Update info card siswa (seperti tampilan gambar 2)
+    let infoCard = document.getElementById('infoSiswaCard');
+    if (infoCard) {
+        infoCard.classList.remove('hidden');
+        document.getElementById('infoNama').innerText = studentTarget.nama || '-';
+        document.getElementById('infoKelas').innerText = studentTarget.kelas || '-';
+        document.getElementById('infoMapel').innerText = dataScan.mapel || '-';
+        document.getElementById('infoAbsen').innerText = absenTerdeteksi;
+    }
 
     // 2. Bandingkan Jawaban di Form Edit dengan Kunci Jawaban Database
     let kunci = dataScan.kunciPG || [];
@@ -2730,12 +3023,19 @@ window.kalkulasiUlangNilai = function() {
     document.getElementById('skorSalah').innerText = salah;
     document.getElementById('skorAkhir').innerText = nilai;
 
-    // 5. Simpan ke penampungan sementara
+    // 5. Simpan ke penampungan sementara (termasuk detail jawaban per soal)
+    let jawabanDetail = [];
+    for (let i = 0; i < dataScan.jmlPG; i++) {
+        let el2 = document.getElementById(`editJawaban_${i}`);
+        jawabanDetail.push(el2 ? el2.value : '-');
+    }
     window.tempCaptureData = {
         studentId: studentTarget.id,
         benar: benar,
         salah: salah,
-        nilai: nilai
+        nilai: nilai,
+        jawaban: jawabanDetail,
+        noAbsen: absenTerdeteksi
     };
 };
 
