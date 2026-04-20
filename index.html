@@ -2554,12 +2554,24 @@ window.tutupKameraLJK = function() {
 function renderLJKKamera() {
     let data = getDB('mc_ljk_scan').find(s => s.id === window.activeScanId);
     return `
+        <style>
+            @keyframes scanline {
+                0% { top: 0%; opacity: 0; }
+                10% { opacity: 1; }
+                90% { opacity: 1; }
+                100% { top: 100%; opacity: 0; }
+            }
+            .animate-scan {
+                animation: scanline 2.5s ease-in-out infinite;
+            }
+        </style>
+
         <div class="bg-gray-900 rounded-2xl shadow-2xl overflow-hidden text-white relative h-[75vh] flex flex-col">
             <div class="absolute top-0 left-0 w-full p-4 flex justify-between items-center z-20 bg-gradient-to-b from-black/80 to-transparent">
                 <button onclick="window.tutupKameraLJK()" class="bg-black/50 hover:bg-black/80 text-white font-bold px-4 py-2 rounded-full backdrop-blur transition"><i class="fas fa-arrow-left mr-2"></i> Kembali</button>
                 <div class="text-right drop-shadow-md">
                     <h3 class="font-bold text-lg">${data.topik}</h3>
-                    <p class="text-xs text-yellow-300">Paskan 4 kotak hitam di dalam area panduan</p>
+                    <p class="text-[10px] text-yellow-300">Pastikan 4 kotak hitam LJK masuk ke layar</p>
                 </div>
             </div>
             
@@ -2572,11 +2584,20 @@ function renderLJKKamera() {
 
                 <video id="videoLJK" class="w-full h-full object-cover relative z-0" autoplay muted playsinline></video>
                 
-                <div class="absolute inset-4 md:inset-10 border-2 border-dashed border-white/40 rounded-lg pointer-events-none z-10">
-                    <div class="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-green-400 rounded-tl-lg shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
-                    <div class="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-green-400 rounded-tr-lg shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
-                    <div class="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-green-400 rounded-bl-lg shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
-                    <div class="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-green-400 rounded-br-lg shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
+                <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-10 px-6 pb-20">
+                    <div class="relative w-full max-w-sm aspect-[3/4] border-2 border-dashed border-white/30 rounded-lg bg-blue-500/5">
+                        
+                        <div class="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-400"></div>
+                        <div class="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-400"></div>
+                        <div class="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-400"></div>
+                        <div class="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-green-400"></div>
+                        
+                        <div class="absolute left-0 w-full h-1 bg-green-400/80 shadow-[0_0_15px_#4ade80] animate-scan"></div>
+                        
+                        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-white/30 font-bold text-2xl tracking-widest uppercase rotate-90 whitespace-nowrap">
+                            Area Kertas
+                        </div>
+                    </div>
                 </div>
 
                 <div class="absolute bottom-6 w-full flex justify-center z-20">
