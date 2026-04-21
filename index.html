@@ -2320,10 +2320,58 @@ window.ljkSimpanKeTabScan = function() {
     const kunci   = [...ljkScanState.answerKey];
     if (!topik) { customAlert('Isi Nama Ujian terlebih dahulu!', 'warning'); return; }
 
-    // Buka popup kunci jawaban agar user bisa memilih mapel & konfirmasi
-    const mapelInput = prompt('Masukkan Nama Mata Pelajaran:', 'Umum');
-    if (mapelInput === null) return;
+    // Tampilkan custom modal untuk input nama mata pelajaran
+    window._ljkSimpanPending = { topik, jmlPG, jmlOpsi, kunci };
+    const existModal = document.getElementById('ljkMapelInputModal');
+    if (existModal) existModal.remove();
+    const modal = document.createElement('div');
+    modal.id = 'ljkMapelInputModal';
+    modal.className = 'fixed inset-0 z-[9999] flex items-center justify-center p-4';
+    modal.style.background = 'rgba(0,0,0,0.55)';
+    modal.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 modal-pop">
+            <div class="flex items-center gap-3 mb-4">
+                <div class="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center">
+                    <i class="fas fa-book text-emerald-600"></i>
+                </div>
+                <div>
+                    <h3 class="font-bold text-gray-800 text-base">Simpan Setingan LJK</h3>
+                    <p class="text-xs text-gray-500">Topik: <b>${topik}</b></p>
+                </div>
+            </div>
+            <label class="text-xs font-bold text-gray-600 block mb-1">Nama Mata Pelajaran</label>
+            <input id="ljkMapelInputField" type="text" value="Umum" placeholder="Contoh: Matematika"
+                class="w-full border-2 border-emerald-200 rounded-xl px-4 py-2.5 text-sm font-semibold outline-none focus:border-emerald-500 mb-4">
+            <div class="flex gap-3">
+                <button onclick="document.getElementById('ljkMapelInputModal').remove()" 
+                    class="flex-1 py-2.5 rounded-xl border border-gray-300 text-gray-600 font-bold text-sm hover:bg-gray-50">
+                    Batal
+                </button>
+                <button onclick="window._ljkDoSimpan()" 
+                    class="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow">
+                    <i class="fas fa-save mr-1"></i> Simpan
+                </button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+    setTimeout(() => {
+        const f = document.getElementById('ljkMapelInputField');
+        if (f) { f.focus(); f.select(); }
+    }, 100);
+    // Enter key shortcut
+    modal.querySelector('#ljkMapelInputField').addEventListener('keydown', e => {
+        if (e.key === 'Enter') window._ljkDoSimpan();
+    });
+};
+
+window._ljkDoSimpan = function() {
+    const modal = document.getElementById('ljkMapelInputModal');
+    const mapelInput = (document.getElementById('ljkMapelInputField')||{}).value || '';
     const mapel = mapelInput.trim() || 'Umum';
+    if (modal) modal.remove();
+
+    const { topik, jmlPG, jmlOpsi, kunci } = window._ljkSimpanPending || {};
+    if (!topik) return;
 
     const data = {
         id: Date.now(), guruUsername: currentUserUsername, schoolCode: currentSchoolCode,
@@ -2331,15 +2379,14 @@ window.ljkSimpanKeTabScan = function() {
         jumlahOpsi: jmlOpsi, kunciPG: kunci, tanggal: new Date().toISOString(), dataSiswa: []
     };
     const db = getDB(LJK_STORE);
-    // Cegah duplikasi topik yang sama persis
     const existing = db.findIndex(d => d.topik === topik && d.guruUsername === currentUserUsername);
     if (existing > -1) {
         db[existing] = { ...db[existing], ...data, id: db[existing].id, dataSiswa: db[existing].dataSiswa || [] };
         saveDB(LJK_STORE, db);
-        customAlert(`Setingan LJK "${topik}" berhasil diperbarui di Tab Scan!`, 'success');
+        customAlert('Setingan LJK "' + topik + '" berhasil diperbarui di Tab Scan!', 'success');
     } else {
         db.push(data); saveDB(LJK_STORE, db);
-        customAlert(`Setingan LJK "${topik}" berhasil disimpan ke Tab Scan!`, 'success');
+        customAlert('Setingan LJK "' + topik + '" berhasil disimpan ke Tab Scan!', 'success');
     }
 };
 window.ljkPrintSheet = function() {
@@ -2520,8 +2567,8 @@ function renderTabScanLJK() {
             </button>
             <div class="flex items-center gap-3 flex-1 min-w-[200px]">
                 <label class="text-xs font-bold text-gray-600 shrink-0">Ambang Deteksi:</label>
-                <input id="ljkThreshold" type="range" min="0.35" max="0.85" step="0.01" value="0.55" class="flex-1" oninput="document.getElementById('ljkThreshVal').textContent=Math.round(this.value*100)+'%'">
-                <span id="ljkThreshVal" class="text-sm font-bold text-rose-600 w-12 text-right">55%</span>
+                <input id="ljkThreshold" type="range" min="0.25" max="0.80" step="0.01" value="0.45" class="flex-1" oninput="document.getElementById('ljkThreshVal').textContent=Math.round(this.value*100)+'%'">
+                <span id="ljkThreshVal" class="text-sm font-bold text-rose-600 w-12 text-right">45%</span>
             </div>
         </div>
 
@@ -2728,11 +2775,11 @@ window.ljkRunScan = function() {
         ljkScanState.maxScore      = 100;
     }
 
-    ljkScanState.detectionThreshold = parseFloat((document.getElementById('ljkThreshold')||{}).value) || 0.55;
+    ljkScanState.detectionThreshold = parseFloat((document.getElementById('ljkThreshold')||{}).value) || 0.45;
 
     const normalized = ljkNormalizeImage();
     if (!normalized) {
-        customAlert('Marker hitam tidak terbaca. Coba foto yang lebih terang dan lurus, pastikan 4 marker terlihat.', 'error');
+        customAlert('Marker sudut tidak terbaca. Tips: (1) Pastikan 4 kotak marker di sudut terlihat jelas, (2) Foto tegak lurus dari atas, (3) Cahaya merata jangan ada bayangan, (4) Coba turunkan Ambang Deteksi ke 35-45%.', 'error');
         return;
     }
 
@@ -2763,58 +2810,114 @@ function ljkNormalizeImage() {
     tCtx.drawImage(src, -src.width/2, -src.height/2);
     tCtx.restore();
 
-    const markers = ljkDetectMarkers(tmp);
+    // Skala foto ke ukuran wajar agar tidak terlalu besar (maks 2000px)
+    let processCanvas = tmp;
+    const MAX_DIM = 2000;
+    if (tmp.width > MAX_DIM || tmp.height > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(tmp.width, tmp.height);
+        const scaled = document.createElement('canvas');
+        scaled.width  = Math.round(tmp.width * scale);
+        scaled.height = Math.round(tmp.height * scale);
+        const sCtx = scaled.getContext('2d', { willReadFrequently: true });
+        sCtx.drawImage(tmp, 0, 0, scaled.width, scaled.height);
+        processCanvas = scaled;
+    }
+
+    // Tingkatkan kontras agar marker lebih terdeteksi
+    const enhanced = ljkEnhanceContrast(processCanvas);
+
+    // Coba deteksi marker di gambar enhanced, fallback ke original
+    let markers = ljkDetectMarkers(enhanced);
+    if (!markers) markers = ljkDetectMarkers(processCanvas);
     if (!markers) return null;
 
     const left   = Math.max(0, Math.min(markers.topLeft.x, markers.bottomLeft.x) - 40);
     const top    = Math.max(0, Math.min(markers.topLeft.y, markers.topRight.y)    - 40);
-    const right  = Math.min(tmp.width,  Math.max(markers.topRight.x, markers.bottomRight.x)  + LJK_MARKER + 40);
-    const bottom = Math.min(tmp.height, Math.max(markers.bottomLeft.y, markers.bottomRight.y) + LJK_MARKER + 40);
+    const right  = Math.min(processCanvas.width,  Math.max(markers.topRight.x, markers.bottomRight.x)  + LJK_MARKER + 40);
+    const bottom = Math.min(processCanvas.height, Math.max(markers.bottomLeft.y, markers.bottomRight.y) + LJK_MARKER + 40);
 
     const out = document.createElement('canvas');
     out.width = LJK_SHEET_W; out.height = LJK_SHEET_H;
     const oCtx = out.getContext('2d', { willReadFrequently: true });
     oCtx.fillStyle = '#fff'; oCtx.fillRect(0,0,LJK_SHEET_W,LJK_SHEET_H);
-    oCtx.drawImage(tmp, left, top, right-left, bottom-top, 0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    oCtx.drawImage(processCanvas, left, top, right-left, bottom-top, 0, 0, LJK_SHEET_W, LJK_SHEET_H);
+    return out;
+}
+
+// Tingkatkan kontras gambar (grayscale + threshold adaptif sederhana)
+function ljkEnhanceContrast(canvas) {
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const ctx = out.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0);
+    const imgData = ctx.getImageData(0, 0, out.width, out.height);
+    const d = imgData.data;
+    // Hitung rata-rata kecerahan untuk threshold adaptif
+    let sum = 0, count = 0;
+    for (let i = 0; i < d.length; i += 16) { // sample setiap 4 pixel
+        sum += (d[i] + d[i+1] + d[i+2]) / 3;
+        count++;
+    }
+    const avg = sum / count;
+    const cutoff = Math.min(avg * 0.65, 140); // batas gelap adaptif
+    for (let i = 0; i < d.length; i += 4) {
+        const gray = (d[i] + d[i+1] + d[i+2]) / 3;
+        const v = gray < cutoff ? 0 : 255;
+        d[i] = d[i+1] = d[i+2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
     return out;
 }
 
 function ljkDetectMarkers(canvas) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const { width: W, height: H } = canvas;
-    const quads = {
-        topLeft:     { x: 0,              y: 0,              w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
-        topRight:    { x: Math.floor(W*0.7), y: 0,           w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
-        bottomLeft:  { x: 0,              y: Math.floor(H*0.7), w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
-        bottomRight: { x: Math.floor(W*0.7), y: Math.floor(H*0.7), w: Math.floor(W*0.3), h: Math.floor(H*0.3) },
-    };
-    const found = {};
-    for (const [key, q] of Object.entries(quads)) {
-        const data = ctx.getImageData(q.x, q.y, q.w, q.h);
-        let best = null;
-        for (let y = 0; y < q.h - LJK_MARKER; y += 6) {
-            for (let x = 0; x < q.w - LJK_MARKER; x += 6) {
-                const d = ljkSampleDark(data, x, y, LJK_MARKER);
-                if (!best || d > best.darkness) best = { darkness: d, x: q.x+x, y: q.y+y };
+
+    // Coba beberapa threshold secara otomatis (dari ketat ke longgar)
+    const darkThresholds = [0.38, 0.28, 0.22, 0.16];
+
+    for (const minDark of darkThresholds) {
+        const quads = {
+            topLeft:     { x: 0,                 y: 0,                 w: Math.floor(W*0.32), h: Math.floor(H*0.32) },
+            topRight:    { x: Math.floor(W*0.68), y: 0,                 w: Math.floor(W*0.32), h: Math.floor(H*0.32) },
+            bottomLeft:  { x: 0,                 y: Math.floor(H*0.68), w: Math.floor(W*0.32), h: Math.floor(H*0.32) },
+            bottomRight: { x: Math.floor(W*0.68), y: Math.floor(H*0.68), w: Math.floor(W*0.32), h: Math.floor(H*0.32) },
+        };
+        const found = {};
+        let allFound = true;
+        for (const [key, q] of Object.entries(quads)) {
+            const data = ctx.getImageData(q.x, q.y, q.w, q.h);
+            let best = null;
+            // Cari area paling gelap dengan step lebih kecil (lebih presisi)
+            const step = Math.max(3, Math.floor(LJK_MARKER / 8));
+            for (let y = 0; y < q.h - LJK_MARKER; y += step) {
+                for (let x = 0; x < q.w - LJK_MARKER; x += step) {
+                    const d = ljkSampleDark(data, x, y, LJK_MARKER);
+                    if (!best || d > best.darkness) best = { darkness: d, x: q.x+x, y: q.y+y };
+                }
             }
+            if (!best || best.darkness < minDark) { allFound = false; break; }
+            found[key] = best;
         }
-        if (!best || best.darkness < 0.38) return null;
-        found[key] = best;
+        if (allFound) return found;
     }
-    return found;
+    return null; // Semua threshold gagal
 }
 
 function ljkSampleDark(imageData, sx, sy, size) {
     const { data, width } = imageData;
     let sum = 0, count = 0;
-    for (let y = 0; y < size; y += 4) {
-        for (let x = 0; x < size; x += 4) {
+    // Sample lebih rapat untuk akurasi lebih baik
+    const step = Math.max(2, Math.floor(size / 16));
+    for (let y = 0; y < size; y += step) {
+        for (let x = 0; x < size; x += step) {
             const idx = ((sy+y)*width + (sx+x)) * 4;
+            if (idx + 2 >= data.length) continue;
             const bright = (data[idx]+data[idx+1]+data[idx+2]) / (255*3);
             sum += 1 - bright; count++;
         }
     }
-    return sum / count;
+    return count > 0 ? sum / count : 0;
 }
 
 // --------- Analisis Bubble (dari app.js measureBubbleFill) ---------
